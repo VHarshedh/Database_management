@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chess_arena"
+version = "0.1.0"
+description = "Multi-agent chess OpenEnv with Stockfish-backed rewards and GRPO self-play training"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "openenv",
+    "openenv-core[core]>=0.2.1",
+    "fastmcp",
+    "pydantic",
+    "python-chess>=1.999",
+    "stockfish>=3.28",
+    "openai",
+    "httpx",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+]
+# Streamlit dashboard deps (reuses support_env/visualizer.py). Kept optional
+# to keep Docker / HF Space image small.
+viz = [
+    "streamlit",
+    "pandas",
+]
+# Optional local-training deps. Not installed in the Docker image.
+train = [
+    "torch",
+    "transformers",
+    "trl>=0.12",
+    "unsloth",
+    "datasets",
+    "matplotlib",
+    "nest_asyncio",
+]
+
+[project.scripts]
+# Run the server via: `uv run --project . server` or `python -m chess_arena.server.app`.
+server = "chess_arena.server.app:main"
+chess-inference = "chess_arena.inference:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["chess_arena", "chess_arena.server"]
+package-dir = { "chess_arena" = ".", "chess_arena.server" = "server" }
