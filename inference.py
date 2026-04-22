@@ -1112,14 +1112,15 @@ def main() -> None:
     google_url = env_google.get("API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
     google_key = env_google.get("HF_TOKEN") or env_google.get("OPENAI_API_KEY") or API_KEY
 
-    white_model = "gpt-oss-120b"
-    black_model = "gemini-3.1-pro-preview"
+    # White uses Google, Black uses Groq
+    white_model = env_google.get("MODEL_WHITE", "gemini-3.1-pro-preview")
+    black_model = env_groq.get("MODEL_BLACK", "openai/gpt-oss-120b")
 
     log_info("═" * 60)
     log_info(" Chess Arena — Two-Model Matchup")
     log_info("═" * 60)
-    log_info(f" WHITE : {white_model} (Groq)")
-    log_info(f" BLACK : {black_model} (Google)")
+    log_info(f" WHITE : {white_model} (Google)")
+    log_info(f" BLACK : {black_model} (Groq)")
     log_info(f" Delay : {STEP_DELAY_SECONDS}s/turn  |  Timeout: {LLM_CALL_TIMEOUT}s/call")
     log_info(f" Games : {NUM_GAMES}  |  Max plies: {MAX_PLIES}")
     log_info("═" * 60)
@@ -1131,9 +1132,9 @@ def main() -> None:
             sys.exit(1)
         log_info("Server ready.\n")
 
-        # Create two separate OpenAI clients for White (Groq) and Black (Google)
-        client_white = OpenAI(base_url=groq_url, api_key=groq_key)
-        client_black = OpenAI(base_url=google_url, api_key=google_key)
+        # Create two separate OpenAI clients for White (Google) and Black (Groq)
+        client_white = OpenAI(base_url=google_url, api_key=google_key)
+        client_black = OpenAI(base_url=groq_url, api_key=groq_key)
 
         policy_white = make_openai_policy(
             client_white,
