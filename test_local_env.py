@@ -21,10 +21,23 @@ from openenv.core.env_server.mcp_types import CallToolAction, ListToolsAction
 from chess_arena.server.chess_environment import ChessEnvironment
 
 
-UNIVERSAL_THOUGHT = (
-    "Evaluating the current position, considering piece activity, king safety, "
-    "and pawn structure before committing to a move."
+# Structured reasoning args shared across all test tool calls.
+_TA = (
+    "No immediate checks or captures. Position is symmetric from starting setup. "
+    "Evaluating piece activity, king safety, and pawn structure."
 )
+_CM = ["e2e4", "d2d4", "g1f3"]
+_JU = (
+    "Developing pieces toward the center to control space and enable "
+    "king safety via castling."
+)
+
+# Short-form dict for use in arguments=
+UNIVERSAL_ARGS = {
+    "threat_analysis": _TA,
+    "candidate_moves": _CM,
+    "justification": _JU,
+}
 
 
 def _print_observation(label: str, obs) -> None:
@@ -68,7 +81,7 @@ def run_inprocess_smoke() -> None:
     obs = env.step(
         CallToolAction(
             tool_name="analyze_board",
-            arguments={"thought": UNIVERSAL_THOUGHT},
+            arguments=UNIVERSAL_ARGS,
         )
     )
     _print_observation("analyze_board", obs)
@@ -77,7 +90,7 @@ def run_inprocess_smoke() -> None:
     obs = env.step(
         CallToolAction(
             tool_name="list_legal_moves",
-            arguments={"thought": UNIVERSAL_THOUGHT},
+            arguments=UNIVERSAL_ARGS,
         )
     )
     _print_observation("list_legal_moves", obs)
@@ -87,7 +100,11 @@ def run_inprocess_smoke() -> None:
     obs = env.step(
         CallToolAction(
             tool_name="make_move",
-            arguments={"thought": UNIVERSAL_THOUGHT, "uci_move": "e2e4"},
+            arguments={
+                **UNIVERSAL_ARGS,
+                "candidate_moves": ["e2e4", "d2d4", "g1f3"],  # e2e4 must be in list
+                "uci_move": "e2e4",
+            },
         )
     )
     _print_observation("make_move e2e4", obs)
@@ -101,7 +118,10 @@ def run_inprocess_smoke() -> None:
     obs = env.step(
         CallToolAction(
             tool_name="ping_humanhelper",
-            arguments={"thought": UNIVERSAL_THOUGHT, "reason": "Need a hint."},
+            arguments={
+                **UNIVERSAL_ARGS,
+                "reason": "Need a hint.",
+            },
         )
     )
     _print_observation("ping_humanhelper", obs)

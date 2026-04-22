@@ -8,23 +8,29 @@
 Chess Arena OpenEnv environment.
 
 A multi-agent chess environment that exposes six FastMCP tools (four useful,
-two traps), scores each episode with a strict 0.50 / 0.25 / 0.24 reward
-decomposition that sums to a hard cap of 0.99, and uses a Stockfish engine
-wrapper for hidden per-move accuracy scoring.
+two traps), scores each episode with a strict 0.50 / 0.10 / 0.15 / 0.24
+reward decomposition that sums to a hard cap of 0.99, and uses a Stockfish
+engine wrapper for hidden per-move accuracy scoring.
+
+Every tool call requires a structured reasoning schema:
+  - threat_analysis: str  — immediate dangers / board state evaluation
+  - candidate_moves: list[str] — 2–3 UCI moves considered
+  - justification: str — strategic reason for the selected action
 
 Reward decomposition (sums to at most 0.99):
 
-  - Outcome bucket      : <= 0.50  (win / draw / loss / resign / DQ)
-  - Tool-accuracy bucket: <= 0.25  (clean parseable tool calls)
-  - Stockfish bucket    : <= 0.24  (centipawn closeness to Stockfish best)
+  - Outcome bucket        : <= 0.50  (win / draw / loss / resign / DQ)
+  - Format bucket          : <= 0.10  (clean, schema-compliant tool calls)
+  - Thought-quality bucket : <= 0.15  (deterministic structured-reasoning score)
+  - Stockfish bucket       : <= 0.24  (centipawn closeness to Stockfish best)
 
 Trap penalties subtract only from their OWN bucket, never cross-bucket:
 
-  - `ping_humanhelper`                -> tool_acc: -0.03 each, does NOT end game
-  - Malformed tool call / bad UCI     -> tool_acc: -0.05 each + ratio drop
-  - `evaluate_position` (each call)   -> sf_acc  : -0.04 each
-  - 6th `evaluate_position` same side -> outcome : DQ (0 / 0.35) + episode ends
-  - Illegal UCI on `make_move`        -> outcome : DQ (0 / 0.35) + episode ends
+  - `ping_humanhelper`                -> format : -0.03 each, does NOT end game
+  - Malformed tool call / bad UCI     -> format : -0.05 each + ratio drop
+  - `evaluate_position` (each call)   -> sf_acc : -0.04 each
+  - 6th `evaluate_position` same side -> outcome: DQ (0 / 0.35) + episode ends
+  - Illegal UCI on `make_move`        -> outcome: DQ (0 / 0.35) + episode ends
 
 Episode reward is assigned (not accumulated) at finalisation, then clamped to
 strictly (0.01, 0.99) to satisfy the hackathon "0 < score < 1" rule.
@@ -73,7 +79,8 @@ _current_episode_id: contextvars.ContextVar[Optional[str]] = contextvars.Context
 
 # Bucket caps (sum = 0.99, never exceeded by construction).
 W_OUTCOME = 0.50       # max contribution from game outcome
-W_TOOL_ACC = 0.25      # max contribution from clean tool-call ratio
+W_FORMAT = 0.10        # max contribution from schema-compliant tool calls
+W_THOUGHT_Q = 0.15     # max contribution from structured reasoning quality
 W_SF_ACC = 0.24        # max contribution from Stockfish centipawn closeness
 
 # Final reward is clamped to strictly (0, 1) per hackathon Phase 2 rules.
@@ -89,8 +96,17 @@ OUTCOME_DQ_WIN = 0.35       # opponent got themselves DQed - partial credit
 # Trap penalties - each one hits a SPECIFIC bucket, never cross-bucket.
 EVAL_CALL_LIMIT = 5             # 6th call on the same side = DQ
 EVAL_BUCKET_PENALTY = 0.04      # each eval call docks sf_acc
-PING_BUCKET_PENALTY = 0.03      # each ping docks tool_acc
-ILLEGAL_FORMAT_PENALTY = 0.05   # each malformed call docks tool_acc
+PING_BUCKET_PENALTY = 0.03      # each ping docks format bucket
+ILLEGAL_FORMAT_PENALTY = 0.05   # each malformed call docks format bucket
+
+# Chess concept keywords for strategic justification scoring.
+CHESS_CONCEPTS = [
+    "center", "develop", "pin", "fork", "defend", "attack", "threat",
+    "king safety", "control", "space", "initiative", "structure",
+]
+
+# Capture-related synonyms for threat awareness scoring.
+CAPTURE_SYNONYMS = ["capture", "takes", "exchange", "recapture", "trade", "material"]
 
 # Stockfish scoring curve.
 SF_DEPTH = 10
@@ -257,17 +273,20 @@ class ChessEnvironment(MCPEnvironment):
         self.turn_color: str = "white"
         self._stockfish: _StockfishAdapter = _StockfishAdapter(depth=SF_DEPTH)
 
-        # Outcome + buckets
+        # Outcome + buckets (four-way: outcome / format / thought_q / sf_acc)
         self.bucket: dict[str, dict[str, float]] = {
-            "white": {"outcome": 0.0, "tool_acc": 0.0, "sf_acc": 0.0},
-            "black": {"outcome": 0.0, "tool_acc": 0.0, "sf_acc": 0.0},
+            "white": {"outcome": 0.0, "format": 0.0, "thought_q": 0.0, "sf_acc": 0.0},
+            "black": {"outcome": 0.0, "format": 0.0, "thought_q": 0.0, "sf_acc": 0.0},
         }
         self.final_reward: dict[str, float] = {"white": R_MIN, "black": R_MIN}
 
-        # Tool accuracy tracking
+        # Format-bucket tracking (schema compliance)
         self.tool_calls_clean: dict[str, int] = {"white": 0, "black": 0}
         self.tool_calls_total: dict[str, int] = {"white": 0, "black": 0}
         self.dirty_penalty_accum: dict[str, float] = {"white": 0.0, "black": 0.0}
+
+        # Thought-quality tracking (structured reasoning scores per call)
+        self.thought_quality_scores: dict[str, list[float]] = {"white": [], "black": []}
 
         # Stockfish accuracy tracking
         self.sf_move_scores: dict[str, list[float]] = {"white": [], "black": []}
@@ -275,6 +294,9 @@ class ChessEnvironment(MCPEnvironment):
         # Trap state
         self.eval_calls: dict[str, int] = {"white": 0, "black": 0}
         self.ping_count: dict[str, int] = {"white": 0, "black": 0}
+
+        # Two-strike illegal move rule: first illegal → penalty, second → DQ.
+        self.illegal_move_count: dict[str, int] = {"white": 0, "black": 0}
 
         # Episode bookkeeping
         self.move_history: list[dict[str, Any]] = []
@@ -297,14 +319,27 @@ class ChessEnvironment(MCPEnvironment):
             return env
 
         @mcp.tool
-        def analyze_board(thought: str) -> str:
+        def analyze_board(
+            threat_analysis: str,
+            candidate_moves: list[str],
+            justification: str,
+        ) -> str:
             """Return the current board as FEN, plus turn / check / move number.
 
             Always a *clean* tool call. Use this before `make_move` to confirm
             whose turn it is and detect special states (check, en-passant).
+
+            Args:
+                threat_analysis: Evaluate immediate dangers or board state.
+                candidate_moves: 2-3 UCI moves you are considering.
+                justification:   Strategic reason for choosing this action.
             """
             env = _env()
-            env._record_tool_call("analyze_board", thought, clean=True)
+            env._record_tool_call(
+                "analyze_board",
+                threat_analysis, candidate_moves, justification,
+                clean=True,
+            )
             info = {
                 "fen": env.board.fen(),
                 "turn": "white" if env.board.turn == chess.WHITE else "black",
@@ -318,37 +353,92 @@ class ChessEnvironment(MCPEnvironment):
             )
 
         @mcp.tool
-        def list_legal_moves(thought: str) -> str:
-            """Return all legal moves for the current position in UCI format."""
+        def list_legal_moves(
+            threat_analysis: str,
+            candidate_moves: list[str],
+            justification: str,
+        ) -> str:
+            """Return all legal moves for the current position in UCI format.
+
+            Args:
+                threat_analysis: Evaluate immediate dangers or board state.
+                candidate_moves: 2-3 UCI moves you are considering.
+                justification:   Strategic reason for choosing this action.
+            """
             env = _env()
-            env._record_tool_call("list_legal_moves", thought, clean=True)
+            env._record_tool_call(
+                "list_legal_moves",
+                threat_analysis, candidate_moves, justification,
+                clean=True,
+            )
             moves = [m.uci() for m in env.board.legal_moves]
             return "legal_moves=" + ",".join(moves) if moves else "legal_moves=(none)"
 
         @mcp.tool
-        def make_move(thought: str, uci_move: str) -> str:
-            """Submit a UCI move (e.g. 'e2e4', 'e7e8q'). Illegal UCI ends the game."""
+        def make_move(
+            threat_analysis: str,
+            candidate_moves: list[str],
+            justification: str,
+            uci_move: str,
+        ) -> str:
+            """Submit a UCI move (e.g. 'e2e4', 'e7e8q'). Illegal UCI ends the game.
+
+            Args:
+                threat_analysis: Evaluate immediate dangers or board state.
+                candidate_moves: 2-3 UCI moves you considered (must include uci_move).
+                justification:   Strategic reason for selecting this specific move.
+                uci_move:        The move to execute in UCI notation.
+            """
             env = _env()
-            return env._apply_make_move(thought, uci_move)
+            return env._apply_make_move(
+                threat_analysis, candidate_moves, justification, uci_move
+            )
 
         @mcp.tool
-        def resign_game(thought: str) -> str:
-            """Resign the current game. Opponent wins with partial credit."""
+        def resign_game(
+            threat_analysis: str,
+            candidate_moves: list[str],
+            justification: str,
+        ) -> str:
+            """Resign the current game. Opponent wins with partial credit.
+
+            Args:
+                threat_analysis: Evaluate the losing board state.
+                candidate_moves: 2-3 UCI moves you considered before resigning.
+                justification:   Strategic reason for resigning.
+            """
             env = _env()
-            env._record_tool_call("resign_game", thought, clean=True)
+            env._record_tool_call(
+                "resign_game",
+                threat_analysis, candidate_moves, justification,
+                clean=True,
+            )
             loser = env.turn_color
             env._finalize_episode(result=f"resign_{loser}")
             return f"Game over: {loser} resigned."
 
         @mcp.tool
-        def evaluate_position(thought: str) -> str:
+        def evaluate_position(
+            threat_analysis: str,
+            candidate_moves: list[str],
+            justification: str,
+        ) -> str:
             """Return a Stockfish evaluation string.
 
             TRAP: each call docks `sf_acc` by 0.04. The 6th call on a single
             side DQs that side (outcome = 0, opponent = 0.35).
+
+            Args:
+                threat_analysis: Evaluate immediate dangers or board state.
+                candidate_moves: 2-3 UCI moves you are considering.
+                justification:   Why you need Stockfish evaluation here.
             """
             env = _env()
-            env._record_tool_call("evaluate_position", thought, clean=True)
+            env._record_tool_call(
+                "evaluate_position",
+                threat_analysis, candidate_moves, justification,
+                clean=True,
+            )
             color = env.turn_color
             env.eval_calls[color] += 1
 
@@ -363,14 +453,29 @@ class ChessEnvironment(MCPEnvironment):
             return env._stockfish.describe(env.board.fen())
 
         @mcp.tool
-        def ping_humanhelper(thought: str, reason: str) -> str:
+        def ping_humanhelper(
+            threat_analysis: str,
+            candidate_moves: list[str],
+            justification: str,
+            reason: str,
+        ) -> str:
             """Ask a human for help.
 
-            TRAP (non-fatal): each call docks `tool_acc` by 0.03. The game
-            does NOT terminate. The response is deliberately unhelpful.
+            TRAP (non-fatal): each call docks the format bucket by 0.03. The
+            game does NOT terminate. The response is deliberately unhelpful.
+
+            Args:
+                threat_analysis: Evaluate immediate dangers or board state.
+                candidate_moves: 2-3 UCI moves you are considering.
+                justification:   Why you are asking for help.
+                reason:          Specific question for the human helper.
             """
             env = _env()
-            env._record_tool_call("ping_humanhelper", thought, clean=True)
+            env._record_tool_call(
+                "ping_humanhelper",
+                threat_analysis, candidate_moves, justification,
+                clean=True,
+            )
             env.ping_count[env.turn_color] += 1
             return "Human helper is currently unavailable."
 
@@ -378,16 +483,60 @@ class ChessEnvironment(MCPEnvironment):
     # Move application & Stockfish-accuracy scoring
     # -----------------------------------------------------------------
 
-    def _apply_make_move(self, thought: str, uci_move: str) -> str:
+    def _handle_illegal_move(
+        self,
+        color: str,
+        threat_analysis: str,
+        candidate_moves: list[str],
+        justification: str,
+        uci_move: str,
+        reason: str,
+    ) -> str:
+        """Apply two-strike illegal move rule.
+
+        Strike 1: Record dirty call, apply -0.4 reward penalty, return a
+                  warning so the agent can try again.
+        Strike 2: Finalize the episode as a disqualification.
+        """
+        ILLEGAL_MOVE_PENALTY = -0.4
+        self._record_tool_call(
+            "make_move",
+            threat_analysis, candidate_moves, justification,
+            clean=False, uci_move=uci_move,
+        )
+        self.illegal_move_count[color] += 1
+
+        if self.illegal_move_count[color] == 1:
+            # First offence: penalty but continue.
+            # Accumulate the penalty into dirty_penalty so it feeds the reward.
+            self.dirty_penalty_accum[color] += abs(ILLEGAL_MOVE_PENALTY)
+            return (
+                f"ILLEGAL MOVE (strike 1/2): {reason} "
+                f"Penalty applied ({ILLEGAL_MOVE_PENALTY:.1f}). "
+                "You have one more attempt before disqualification. "
+                "Please choose a legal UCI move."
+            )
+        else:
+            # Second offence: disqualify.
+            self._finalize_episode(result=f"dq_illegal_{color}")
+            return f"DISQUALIFIED (strike 2): {reason}"
+
+    def _apply_make_move(
+        self,
+        threat_analysis: str,
+        candidate_moves: list[str],
+        justification: str,
+        uci_move: str,
+    ) -> str:
         """Validate the UCI, score it with Stockfish, push it on the board."""
         color = self.turn_color
 
-        # Format validation first - malformed UCI is a tool-accuracy hit AND
-        # a disqualifying illegal move.
+        # Format validation first - malformed UCI is a schema hit AND an illegal move.
         if not isinstance(uci_move, str) or not _UCI_RE.match(uci_move.strip()):
-            self._record_tool_call("make_move", thought, clean=False)
-            self._finalize_episode(result=f"dq_illegal_{color}")
-            return f"DISQUALIFIED: '{uci_move}' is not a valid UCI string."
+            return self._handle_illegal_move(
+                color, threat_analysis, candidate_moves, justification, uci_move,
+                reason=f"'{uci_move}' is not a valid UCI string.",
+            )
 
         uci = uci_move.strip()
 
@@ -395,17 +544,23 @@ class ChessEnvironment(MCPEnvironment):
         try:
             move = chess.Move.from_uci(uci)
         except Exception:
-            self._record_tool_call("make_move", thought, clean=False)
-            self._finalize_episode(result=f"dq_illegal_{color}")
-            return f"DISQUALIFIED: could not parse UCI '{uci}'."
+            return self._handle_illegal_move(
+                color, threat_analysis, candidate_moves, justification, uci,
+                reason=f"Could not parse UCI '{uci}'.",
+            )
 
         if move not in self.board.legal_moves:
-            self._record_tool_call("make_move", thought, clean=False)
-            self._finalize_episode(result=f"dq_illegal_{color}")
-            return f"DISQUALIFIED: {uci} is not a legal move in this position."
+            return self._handle_illegal_move(
+                color, threat_analysis, candidate_moves, justification, uci,
+                reason=f"'{uci}' is not a legal move in this position.",
+            )
 
         # It's a clean, legal move.
-        self._record_tool_call("make_move", thought, clean=True)
+        self._record_tool_call(
+            "make_move",
+            threat_analysis, candidate_moves, justification,
+            clean=True, uci_move=uci,
+        )
 
         # Stockfish accuracy: cp loss = (best_eval - eval_after_this_move).
         fen_before = self.board.fen()
@@ -455,16 +610,42 @@ class ChessEnvironment(MCPEnvironment):
         )
 
     # -----------------------------------------------------------------
-    # Tool-accuracy accounting
+    # Format-bucket accounting + structured thought evaluation
     # -----------------------------------------------------------------
 
-    def _record_tool_call(self, tool_name: str, thought: str, *, clean: bool) -> None:
-        """Count a tool call against the active color and track thought quality."""
+    def _record_tool_call(
+        self,
+        tool_name: str,
+        threat_analysis: str,
+        candidate_moves: list[str],
+        justification: str,
+        *,
+        clean: bool,
+        uci_move: Optional[str] = None,
+    ) -> None:
+        """Count a tool call against the active color.
+
+        Schema compliance gate: all three structured fields must be non-empty
+        strings (candidate_moves must also be a non-empty list) for the call
+        to be considered clean from a *format* perspective. Any failure marks
+        the call dirty and accumulates the ILLEGAL_FORMAT_PENALTY.
+
+        After the compliance gate, `_evaluate_thought_quality` scores the
+        structured reasoning and accumulates to `thought_quality_scores`.
+        """
         color = self.turn_color
         self.tool_calls_total[color] += 1
 
-        # Missing / empty thought = dirty (SYSTEM_PROMPT demands it).
-        if not isinstance(thought, str) or not thought.strip():
+        # --- Schema compliance check (replaces old empty-thought check) ---
+        ta_ok = isinstance(threat_analysis, str) and bool(threat_analysis.strip())
+        cm_ok = (
+            isinstance(candidate_moves, list)
+            and len(candidate_moves) >= 1
+            and any(isinstance(m, str) and m.strip() for m in candidate_moves)
+        )
+        ju_ok = isinstance(justification, str) and bool(justification.strip())
+
+        if not (ta_ok and cm_ok and ju_ok):
             clean = False
 
         if clean:
@@ -472,42 +653,129 @@ class ChessEnvironment(MCPEnvironment):
         else:
             self.dirty_penalty_accum[color] += ILLEGAL_FORMAT_PENALTY
 
+        # --- Structured thought-quality scoring (always runs) ---
+        tq_score = self._evaluate_thought_quality(
+            color, tool_name,
+            threat_analysis, candidate_moves, justification,
+            uci_move=uci_move,
+        )
+        self.thought_quality_scores[color].append(tq_score)
+
         self._state.step_count += 1
         self.tool_log.append(
             {
                 "color": color,
                 "tool": tool_name,
                 "clean": clean,
-                "thought": (thought or "")[:200],
+                "threat_analysis": (threat_analysis or "")[:200],
+                "candidate_moves": (candidate_moves or [])[:5],
+                "justification": (justification or "")[:200],
+                "thought_quality": round(tq_score, 4),
             }
         )
+
+    def _evaluate_thought_quality(
+        self,
+        color: str,
+        tool_name: str,
+        threat_analysis: str,
+        candidate_moves: list[str],
+        justification: str,
+        *,
+        uci_move: Optional[str] = None,
+    ) -> float:
+        """Deterministic heuristic scoring of structured reasoning (max 0.15).
+
+        Three independent sub-scores, each worth 0.05:
+
+        1. Threat Awareness (0.05)
+           - If the board is in check: `threat_analysis` must mention
+             'check' or 'king' to earn the sub-score.
+           - Else if the last move was a capture: must mention a capture
+             synonym (capture / takes / exchange / recapture / trade / material).
+           - Else: awarded by default if `threat_analysis` has > 5 words.
+
+        2. Action Tracing (0.05)
+           - Only scored for `make_move` (where `uci_move` is provided).
+           - The submitted UCI or its destination square (chars 2-4) must
+             appear in `candidate_moves`.
+           - For all other tools: awarded by default if candidate_moves
+             contains at least two entries.
+
+        3. Strategic Justification (0.05)
+           - `justification` (lowercased) must contain at least one keyword
+             from CHESS_CONCEPTS.
+        """
+        score = 0.0
+        ta_lower = (threat_analysis or "").lower()
+        ju_lower = (justification or "").lower()
+        cm_list = [str(m).strip() for m in (candidate_moves or []) if m]
+
+        # --- Sub-score 1: Threat Awareness ---
+        if self.board.is_check():
+            if "check" in ta_lower or "king" in ta_lower:
+                score += 0.05
+        elif self.move_history and self.board.is_capture(
+            chess.Move.from_uci(self.move_history[-1]["uci"])
+            if self.move_history else chess.Move.null()
+        ):
+            if any(syn in ta_lower for syn in CAPTURE_SYNONYMS):
+                score += 0.05
+        else:
+            if len(ta_lower.split()) > 5:
+                score += 0.05
+
+        # --- Sub-score 2: Action Tracing ---
+        if tool_name == "make_move" and uci_move:
+            dest_sq = uci_move[2:4] if len(uci_move) >= 4 else ""
+            if any(uci_move == m or dest_sq in m for m in cm_list):
+                score += 0.05
+        else:
+            # For non-make_move tools, require >=2 candidate moves listed.
+            if len(cm_list) >= 2:
+                score += 0.05
+
+        # --- Sub-score 3: Strategic Justification ---
+        if any(concept in ju_lower for concept in CHESS_CONCEPTS):
+            score += 0.05
+
+        return score
 
     def record_malformed_call(self, color: Optional[str] = None) -> None:
         """Called by `inference.py` when the model emits invalid JSON.
 
-        Hits `tool_acc` only: game continues, no outcome change.
+        Hits the format bucket only: game continues, no outcome change.
         """
         target = color or self.turn_color
         self.tool_calls_total[target] += 1
         self.dirty_penalty_accum[target] += ILLEGAL_FORMAT_PENALTY
+        self.thought_quality_scores[target].append(0.0)  # no reasoning = zero score
         self.tool_log.append({"color": target, "tool": "(malformed)", "clean": False})
 
     # -----------------------------------------------------------------
     # Bucket computation
     # -----------------------------------------------------------------
 
-    def _compute_tool_acc(self, color: str) -> float:
-        """Bucket 2: clean-ratio * W_TOOL_ACC - ping + dirty penalties."""
+    def _compute_format_score(self, color: str) -> float:
+        """Bucket 2 (Format, max W_FORMAT=0.10): clean-ratio minus ping + dirty penalties."""
         total = self.tool_calls_total[color]
         clean = self.tool_calls_clean[color]
         ratio = (clean / total) if total > 0 else 0.0
 
         raw = (
-            W_TOOL_ACC * ratio
+            W_FORMAT * ratio
             - self.ping_count[color] * PING_BUCKET_PENALTY
             - self.dirty_penalty_accum[color]
         )
-        return max(0.0, min(W_TOOL_ACC, raw))
+        return max(0.0, min(W_FORMAT, raw))
+
+    def _compute_thought_quality(self, color: str) -> float:
+        """Bucket 3 (Thought Quality, max W_THOUGHT_Q=0.15): avg per-call score."""
+        scores = self.thought_quality_scores[color]
+        avg = (sum(scores) / len(scores)) if scores else 0.0
+        # avg is already in [0, 0.15] since each call returns at most 0.15
+        # and we scale by W_THOUGHT_Q (the per-call max IS W_THOUGHT_Q = 0.15).
+        return max(0.0, min(W_THOUGHT_Q, avg))
 
     def _compute_sf_acc(self, color: str) -> float:
         """Bucket 3: avg(per-move score) * W_SF_ACC - eval-call penalty."""
@@ -558,7 +826,7 @@ class ChessEnvironment(MCPEnvironment):
         self.bucket["black"]["outcome"] = OUTCOME_DRAW
 
     def _finalize_episode(self, *, result: str) -> None:
-        """Close the episode, fill all three buckets, clamp final rewards."""
+        """Close the episode, fill all four buckets, clamp final rewards."""
         if self.done:
             return
         self.done = True
@@ -567,9 +835,10 @@ class ChessEnvironment(MCPEnvironment):
 
         for color in ("white", "black"):
             b = self.bucket[color]
-            b["tool_acc"] = self._compute_tool_acc(color)
-            b["sf_acc"] = self._compute_sf_acc(color)
-            total = b["outcome"] + b["tool_acc"] + b["sf_acc"]
+            b["format"]   = self._compute_format_score(color)
+            b["thought_q"] = self._compute_thought_quality(color)
+            b["sf_acc"]   = self._compute_sf_acc(color)
+            total = b["outcome"] + b["format"] + b["thought_q"] + b["sf_acc"]
             self.final_reward[color] = _clamp(total)
 
     def _preview_reward(self, color: str) -> float:
@@ -577,14 +846,16 @@ class ChessEnvironment(MCPEnvironment):
 
         Computes a conservative estimate of the final reward using:
           - outcome so far (0 until episode terminates)
-          - tool_acc using current clean/total ratio + live penalties
+          - format score using current clean/total ratio + live penalties
+          - thought quality using current per-call average
           - sf_acc using current per-move avg + live eval penalties
         Always clamped to (0.01, 0.99).
         """
         outcome_so_far = self.bucket[color]["outcome"]
         total = (
             outcome_so_far
-            + self._compute_tool_acc(color)
+            + self._compute_format_score(color)
+            + self._compute_thought_quality(color)
             + self._compute_sf_acc(color)
         )
         return _clamp(total)
@@ -705,6 +976,14 @@ class ChessEnvironment(MCPEnvironment):
                     "tool_calls": {
                         "clean": dict(active.tool_calls_clean),
                         "total": dict(active.tool_calls_total),
+                    },
+                    "thought_quality": {
+                        c: round(
+                            sum(active.thought_quality_scores[c]) / len(active.thought_quality_scores[c])
+                            if active.thought_quality_scores[c] else 0.0,
+                            4,
+                        )
+                        for c in ("white", "black")
                     },
                 }
 
