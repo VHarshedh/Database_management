@@ -178,6 +178,15 @@ class _StockfishAdapter:
         except Exception:
             self._engine = None
 
+    def close(self) -> None:
+        """Explicitly shut down the Stockfish subprocess to avoid zombie processes."""
+        if self._engine is not None:
+            try:
+                self._engine.quit()
+            except Exception:
+                pass
+            self._engine = None
+
     @property
     def ready(self) -> bool:
         return self._engine is not None
@@ -270,6 +279,7 @@ class ChessEnvironment(MCPEnvironment):
     def _init_fresh_state(self) -> None:
         """Reset all per-episode state. Also called from `reset()`."""
         self.board: chess.Board = chess.Board()
+        self._last_turn_flipped: bool = False
         self.turn_color: str = "white"
         self._stockfish: _StockfishAdapter = _StockfishAdapter(depth=SF_DEPTH)
 
@@ -340,17 +350,28 @@ class ChessEnvironment(MCPEnvironment):
                 threat_analysis, candidate_moves, justification,
                 clean=True,
             )
+            board = env.board
+            halfmoves_to_50 = max(0, 100 - board.halfmove_clock)
+            can_repeat = board.can_claim_threefold_repetition()
+            can_claim_now = board.can_claim_draw()
             info = {
-                "fen": env.board.fen(),
-                "turn": "white" if env.board.turn == chess.WHITE else "black",
-                "in_check": env.board.is_check(),
-                "move_number": env.board.fullmove_number,
-                "halfmove_clock": env.board.halfmove_clock,
+                "fen": board.fen(),
+                "turn": "white" if board.turn == chess.WHITE else "black",
+                "in_check": board.is_check(),
+                "move_number": board.fullmove_number,
+                "halfmove_clock": board.halfmove_clock,
+                "halfmoves_to_50_move_draw": halfmoves_to_50,
+                "draw_imminent": can_repeat,
+                "can_claim_draw_now": can_claim_now,
             }
             return (
                 f"fen={info['fen']}\nturn={info['turn']}\nin_check={info['in_check']}\n"
-                f"move_number={info['move_number']}\nhalfmove_clock={info['halfmove_clock']}"
+                f"move_number={info['move_number']}\nhalfmove_clock={info['halfmove_clock']}\n"
+                f"halfmoves_to_50_move_draw={info['halfmoves_to_50_move_draw']}\n"
+                f"draw_imminent={info['draw_imminent']}\n"
+                f"can_claim_draw_now={info['can_claim_draw_now']}"
             )
+
 
         @mcp.tool
         def list_legal_moves(
@@ -502,13 +523,12 @@ class ChessEnvironment(MCPEnvironment):
         self._record_tool_call(
             "make_move",
             threat_analysis, candidate_moves, justification,
-            clean=False, uci_move=uci_move,
+            clean=True, uci_move=uci_move,
         )
         self.illegal_move_count[color] += 1
+        self._last_turn_flipped = False
 
         if self.illegal_move_count[color] == 1:
-            # First offence: penalty but continue.
-            # Accumulate the penalty into dirty_penalty so it feeds the reward.
             self.dirty_penalty_accum[color] += abs(ILLEGAL_MOVE_PENALTY)
             return (
                 f"ILLEGAL MOVE (strike 1/2): {reason} "
@@ -517,7 +537,6 @@ class ChessEnvironment(MCPEnvironment):
                 "Please choose a legal UCI move."
             )
         else:
-            # Second offence: disqualify.
             self._finalize_episode(result=f"dq_illegal_{color}")
             return f"DISQUALIFIED (strike 2): {reason}"
 
@@ -540,7 +559,21 @@ class ChessEnvironment(MCPEnvironment):
 
         uci = uci_move.strip()
 
-        # Parse + legality check.
+        # Bug 4 fix: auto-promote bare pawn-to-8th-rank moves to queen.
+        # python-chess requires the promotion suffix (e.g. 'e7e8q'), but LLMs
+        # frequently omit it.  Rather than burning a strike for a recoverable
+        # omission, we silently append 'q' when the destination rank matches
+        # the promoting rank for the moving side, and there is no suffix yet.
+        if len(uci) == 4:
+            dest_rank = uci[3]
+            try:
+                _probe = chess.Move.from_uci(uci + "q")
+                _promo_rank = "8" if self.board.turn == chess.WHITE else "1"
+                if dest_rank == _promo_rank and _probe in self.board.legal_moves:
+                    uci = uci + "q"
+            except Exception:
+                pass
+
         try:
             move = chess.Move.from_uci(uci)
         except Exception:
@@ -565,11 +598,10 @@ class ChessEnvironment(MCPEnvironment):
         # Stockfish accuracy: cp loss = (best_eval - eval_after_this_move).
         fen_before = self.board.fen()
         best_cp = self._stockfish.evaluate_cp(fen_before)
+        was_capture = self.board.is_capture(move)
 
         self.board.push(move)
         fen_after = self.board.fen()
-        # After pushing, side-to-move has flipped, so the "after" eval is from
-        # the OPPONENT's perspective. Negate it to get the mover's perspective.
         raw_after = self._stockfish.evaluate_cp(fen_after)
         after_cp = -raw_after
 
@@ -577,7 +609,7 @@ class ChessEnvironment(MCPEnvironment):
         if self._stockfish.ready:
             move_score = max(0.0, 1.0 - (cp_loss / float(SF_BLUNDER_CP)))
         else:
-            move_score = 0.5  # neutral default when engine unavailable
+            move_score = 0.5
         self.sf_move_scores[color].append(move_score)
 
         self.move_history.append(
@@ -586,6 +618,7 @@ class ChessEnvironment(MCPEnvironment):
                 "uci": uci,
                 "cp_loss": cp_loss,
                 "move_score": round(move_score, 3),
+                "was_capture": was_capture,
             }
         )
 
@@ -604,6 +637,7 @@ class ChessEnvironment(MCPEnvironment):
 
         # Otherwise flip side to move.
         self.turn_color = _other(color)
+        self._last_turn_flipped = True
         return (
             f"Move {uci} applied. turn={self.turn_color} "
             f"cp_loss={cp_loss} move_score={move_score:.2f}"
@@ -709,16 +743,14 @@ class ChessEnvironment(MCPEnvironment):
         score = 0.0
         ta_lower = (threat_analysis or "").lower()
         ju_lower = (justification or "").lower()
-        cm_list = [str(m).strip() for m in (candidate_moves or []) if m]
+        # Bug 6 fix: str(None) == "None" is truthy — filter by identity not truthiness.
+        cm_list = [str(m).strip() for m in (candidate_moves or []) if m is not None and str(m).strip()]
 
         # --- Sub-score 1: Threat Awareness ---
         if self.board.is_check():
             if "check" in ta_lower or "king" in ta_lower:
                 score += 0.05
-        elif self.move_history and self.board.is_capture(
-            chess.Move.from_uci(self.move_history[-1]["uci"])
-            if self.move_history else chess.Move.null()
-        ):
+        elif self.move_history and self.move_history[-1].get("was_capture", False):
             if any(syn in ta_lower for syn in CAPTURE_SYNONYMS):
                 score += 0.05
         else:
@@ -871,6 +903,10 @@ class ChessEnvironment(MCPEnvironment):
         **kwargs: Any,
     ) -> Observation:
         """Start a new game. Returns initial observation with preview reward."""
+        # Bug 1 fix: explicitly shut down the old Stockfish subprocess before
+        # reinitialising state, so tournament runs don't accumulate zombie processes.
+        if hasattr(self, "_stockfish") and self._stockfish is not None:
+            self._stockfish.close()
         self._init_fresh_state()
         if seed is not None:
             # python-chess doesn't use seeds, but we expose it for reproducible
@@ -883,7 +919,14 @@ class ChessEnvironment(MCPEnvironment):
             try:
                 self.board = chess.Board(start_fen)
                 self.turn_color = "white" if self.board.turn == chess.WHITE else "black"
-            except Exception:
+            except Exception as _fen_err:
+                # Bug 7 fix: log the FEN parse failure so it's discoverable.
+                import sys
+                print(
+                    f"[ChessEnvironment] WARNING: Could not parse FEN '{start_fen}': {_fen_err}. "
+                    "Falling back to the default starting position.",
+                    file=sys.stderr,
+                )
                 self.board = chess.Board()
 
         self._state = State(episode_id=episode_id or str(uuid4()), step_count=0)
@@ -923,8 +966,24 @@ class ChessEnvironment(MCPEnvironment):
         req_ep = kwargs.get("episode_id") or _current_episode_id.get()
         if req_ep and req_ep in ChessEnvironment._instances:
             active = ChessEnvironment._instances[req_ep]
-        elif ChessEnvironment._latest_instance is not None:
-            active = ChessEnvironment._latest_instance
+        elif req_ep:
+            # Bug 2 fix: do NOT fall back to _latest_instance when a specific
+            # episode_id was provided but is unrecognised.  Silently routing to
+            # the most-recently-started game would corrupt concurrent sessions —
+            # Game A's White player could make a move on Game B's board.
+            # Raise immediately so the caller gets a clean 400/500 rather than
+            # silent state corruption.
+            raise KeyError(
+                f"Unknown episode_id {req_ep!r}. "
+                "Call /reset first to obtain a valid episode."
+            )
+        elif not req_ep:
+            # No episode_id at all: only safe to fall back to latest_instance
+            # in a single-game context (e.g. the inference.py self-play loop
+            # which calls /reset right before /step).  We keep this path for
+            # backwards compatibility with that caller.
+            if ChessEnvironment._latest_instance is not None:
+                active = ChessEnvironment._latest_instance
 
         token = _active_env.set(active)
         try:
@@ -1027,62 +1086,38 @@ class ChessEnvironment(MCPEnvironment):
 
 
 def _inject_openenv_payload(obs: CallToolObservation, payload: dict[str, Any]) -> None:
-    """Stuff our per-color debug payload into the tool result structure.
-
-    `CallToolObservation.result` is produced by FastMCP and is typically a
-    ``fastmcp.client.client.CallToolResult`` dataclass with
-    ``{content, structured_content, data, meta, is_error}`` fields. We
-    normalise it to a plain dict and patch an ``openenv`` key into
-    ``structured_content`` so HTTP clients can still see bucket breakdowns and
-    per-color final rewards even though the top-level ``metadata`` field is
-    stripped during ``serialize_observation``.
-    """
-    import dataclasses
-
+    """Stuff our per-color debug payload into the tool result structure."""
     res = obs.result
 
     if res is None:
-        res_dict: dict[str, Any] = {}
-    elif isinstance(res, dict):
-        res_dict = dict(res)
-    elif dataclasses.is_dataclass(res) and not isinstance(res, type):
+        return
+
+    # If it's a raw dictionary, modify it directly
+    if isinstance(res, dict):
+        sc = res.get("structured_content")
+        if not isinstance(sc, dict):
+            sc = {}
+        else:
+            sc = dict(sc)
+        sc["openenv"] = payload
+        res["structured_content"] = sc
+        return
+
+    # KEY FIX: If it's a Pydantic model/dataclass, mutate its attribute directly!
+    # Do NOT overwrite obs.result with a dictionary.
+    if hasattr(res, "structured_content"):
+        sc = getattr(res, "structured_content")
+        if not isinstance(sc, dict):
+            sc = {}
+        else:
+            sc = dict(sc)
+        sc["openenv"] = payload
+        
         try:
-            res_dict = dataclasses.asdict(res)
+            setattr(res, "structured_content", sc)
         except Exception:
-            res_dict = _shallow_attrs_to_dict(res)
-    elif hasattr(res, "model_dump"):
-        try:
-            dumped = res.model_dump()
-            res_dict = dict(dumped) if not isinstance(dumped, dict) else dumped
-        except Exception:
-            res_dict = _shallow_attrs_to_dict(res)
-    else:
-        res_dict = _shallow_attrs_to_dict(res)
+            pass
 
-    sc = res_dict.get("structured_content")
-    if not isinstance(sc, dict):
-        sc = {}
-    else:
-        sc = dict(sc)
-    sc["openenv"] = payload
-    res_dict["structured_content"] = sc
-    obs.result = res_dict
-
-
-def _shallow_attrs_to_dict(obj: Any) -> dict[str, Any]:
-    """Best-effort extraction of common MCP result fields from an opaque
-    object. Used only when the standard normalisation paths fail.
-    """
-    out: dict[str, Any] = {}
-    for name in ("content", "structured_content", "data", "meta", "is_error"):
-        if hasattr(obj, name):
-            try:
-                out[name] = getattr(obj, name)
-            except Exception:
-                continue
-    if not out:
-        out["data"] = str(obj)
-    return out
 
 
 def _current_actor_for_observation(
@@ -1090,17 +1125,13 @@ def _current_actor_for_observation(
 ) -> str:
     """Figure out which color should receive the reward on this observation.
 
-    For `make_move`, `turn_color` has already been flipped inside
-    `_apply_make_move` by the time the observation is built, so we look up
-    the opposite color. For all other tools, `turn_color` still points at the
-    caller.
+    Uses the _last_turn_flipped flag set by _apply_make_move (True) or
+    _handle_illegal_move (False) to determine whether turn_color was flipped.
+    If flipped, the actor is _other(turn_color); otherwise turn_color itself.
     """
-    if getattr(action, "tool_name", None) == "make_move" and not env.done:
-        return _other(env.turn_color)
-    # When the game ended via DQ / checkmate, `turn_color` still points at the
-    # side that failed (for DQ) or would have moved next (for checkmate). For
-    # the caller-side observation we want the side that JUST acted.
-    if env.done and env.result and env.result.startswith("checkmate_"):
-        # `make_move` that delivered mate - the mover just flipped turn_color.
-        return _other(env.turn_color)
+    if env.done:
+        return env.turn_color
+    if getattr(action, "tool_name", None) == "make_move":
+        if env._last_turn_flipped:
+            return _other(env.turn_color)
     return env.turn_color

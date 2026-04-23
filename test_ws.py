@@ -79,6 +79,25 @@ def reset_env() -> str:
 
 def step(episode_id: str, tool: str, **arguments) -> StepResult:
     """Post a single tool call and return the parsed StepResult."""
+    
+    # --- AUTO-TRANSLATE OLD SCHEMA TO NEW SCHEMA ---
+    if "thought" in arguments:
+        thought_text = arguments.pop("thought")
+        arguments["threat_analysis"] = thought_text
+        arguments["justification"] = thought_text
+        
+        # The schema strictly requires candidate_moves to be a list
+        if "uci_move" in arguments:
+            arguments["candidate_moves"] = [arguments["uci_move"], "a1a2"]
+        else:
+            arguments["candidate_moves"] = ["e2e4", "d2d4"]
+    # -----------------------------------------------
+    
+    if tool == "make_move":
+        arguments.setdefault("threat_analysis", "Default threat analysis for testing.")
+        arguments.setdefault("candidate_moves", [arguments.get("uci_move", ""), "a1a2"])
+        arguments.setdefault("justification", "Default justification for testing.")
+
     payload = {
         "action": {
             "type": "call_tool",

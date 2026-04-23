@@ -159,7 +159,7 @@ class MatchRecord:
     model_b: str
     white: str                # who played White
     black: str                # who played Black
-    result: Optional[str] = None        # "1-0" / "0-1" / "1/2-1/2" / "error"
+    result: Optional[str] = None        # e.g. "checkmate_white", "draw_stalemate", "error"
     winner: Optional[str] = None
     loser: Optional[str] = None
     decided_by: str = "game"  # "game" | "rematch" | "coin_flip" | "walkover"
@@ -231,6 +231,21 @@ def _run_one_game(
     except Exception as exc:
         print(f"  ⚠️  Game crashed: {exc}")
         return "error", None
+    finally:
+        # Clean up any leaked env instances + Stockfish processes from crashes.
+        # Import here to avoid circular dependency at module level.
+        try:
+            from server.chess_environment import ChessEnvironment
+            stale_ids = [
+                eid for eid, env in ChessEnvironment._instances.items()
+                if env.done or env._state.step_count == 0
+            ]
+            for eid in stale_ids:
+                env = ChessEnvironment._instances.pop(eid, None)
+                if env and hasattr(env, "_stockfish"):
+                    env._stockfish.close()
+        except Exception:
+            pass
 
 
 def _determine_winner_from_result(
@@ -238,15 +253,53 @@ def _determine_winner_from_result(
     model_white: str,
     model_black: str,
 ) -> Optional[str]:
+    """Map an OpenEnv result string to the winning model name.
+
+    OpenEnv emits strings like:
+      "checkmate_white"    → White won by checkmate
+      "checkmate_black"    → Black won by checkmate
+      "resign_white"       → White resigned → Black wins
+      "resign_black"       → Black resigned → White wins
+      "dq_illegal_white"   → White DQ'd → Black wins
+      "dq_eval_abuse_black"→ Black DQ'd → White wins
+      "draw_*"             → draw (stalemate / repetition / 50-move)
+
+    Returns None for draws, errors, and unfinished games so the
+    tie-breaker chain (rematch → coin flip) triggers correctly.
     """
-    Map a chess result string to the winning model name.
-    Returns None for draws/unfinished.
-    """
-    if result == "1-0":
+    if not result or result == "error":
+        return None
+
+    r = result.lower()
+
+    # Explicit draws — return None to trigger rematch / coin-flip
+    if r.startswith("draw_") or r in ("1/2-1/2", "draw"):
+        return None
+
+    # White wins when the result says white is the WINNER side:
+    #   checkmate_white  → White delivered checkmate
+    #   resign_black     → Black resigned (White wins)
+    #   dq_*_black       → Black disqualified (White wins)
+    if "checkmate_white" in r or "resign_black" in r or (
+        ("dq_illegal_black" in r or "dq_eval_abuse_black" in r)
+    ):
         return model_white
-    if result == "0-1":
+
+    # Black wins symmetrically
+    if "checkmate_black" in r or "resign_white" in r or (
+        ("dq_illegal_white" in r or "dq_eval_abuse_white" in r)
+    ):
         return model_black
-    return None  # draw or unfinished
+
+    # Fallback: check which colour appears in the result string.
+    # This handles any future result tags the env might add.
+    if "white" in r and "black" not in r:
+        return model_white
+    if "black" in r and "white" not in r:
+        return model_black
+
+    return None  # unrecognised / draw-like
+
 
 
 def play_match(
@@ -352,13 +405,17 @@ def play_match(
 # ---------------------------------------------------------------------------
 
 def _wait_for_server(url: str, http_client: httpx.Client, retries: int = 30) -> bool:
+    # Bug 4 fix: probe /health (or /docs as fallback) instead of /state.
+    # On a fresh FastAPI boot, /state returns 400/404 until reset() is called,
+    # which would cause the tournament to hang here indefinitely at startup.
     for _ in range(retries):
-        try:
-            r = http_client.get(f"{url}/state", timeout=5.0)
-            if r.status_code < 500:
-                return True
-        except httpx.RequestError:
-            pass
+        for probe in ("/health", "/docs"):
+            try:
+                r = http_client.get(f"{url}{probe}", timeout=5.0)
+                if r.status_code < 500:
+                    return True
+            except httpx.RequestError:
+                pass
         time.sleep(1)
     return False
 

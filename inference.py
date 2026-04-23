@@ -39,13 +39,7 @@ from typing import Any, Callable, Optional
 
 import httpx
 
-try:
-    from dotenv import load_dotenv  # optional, evaluators often don't ship it
-    _env_path = Path(__file__).resolve().parent / ".env"
-    if _env_path.is_file():
-        load_dotenv(_env_path, override=True)
-except Exception:
-    pass
+
 
 try:
     from openai import OpenAI  # openai>=1.0 sync client
@@ -62,28 +56,7 @@ def _strip(s: Optional[str]) -> str:
     return (s or "").strip()
 
 
-def _first_nonempty_env(*names: str) -> str:
-    for name in names:
-        v = _strip(os.getenv(name))
-        if v:
-            return v
-    return ""
-
-
-API_KEY = _first_nonempty_env("HF_TOKEN", "OPENAI_API_KEY", "API_KEY")
-API_BASE_URL = (
-    _first_nonempty_env("API_BASE_URL", "OPENAI_BASE_URL")
-    or "https://generativelanguage.googleapis.com/v1beta/openai/"
-)
 ENV_URL = _strip(os.getenv("ENV_URL", "http://127.0.0.1:8000")).rstrip("/")
-
-# Primary model name (legacy / single-model runs)
-MODEL_NAME = _strip(os.getenv("MODEL_NAME", "gemini-3.1-flash-lite-preview"))
-
-# Two-model matchup (set via env vars or modified here).
-# White: Gemma 4 30B; Black: Gemini 2.0 Flash Lite
-MODEL_WHITE = _strip(os.getenv("MODEL_WHITE", "gemma-4-31b-it"))
-MODEL_BLACK = _strip(os.getenv("MODEL_BLACK", "gemini-3.1-flash-lite-preview"))
 
 NUM_GAMES = int(os.getenv("NUM_GAMES", "1"))
 MAX_PLIES = int(os.getenv("MAX_PLIES", "150"))
@@ -501,13 +474,29 @@ def prune_messages(messages: list, max_tail_messages: int = 80) -> list:
     while pruned_history and pruned_history[0].get("role") == "user" and pruned_history[0].get("content", "").startswith("[") and "result]" in pruned_history[0].get("content", "").split("\n")[0]:
         pruned_history.pop(0)
 
-    # Merge consecutive messages of the same role to satisfy strict alternating role requirements
+    # Merge consecutive messages of the same role to satisfy strict alternating-
+    # role requirements.  Bug 5 fix: cap the merged content length so that a
+    # model stuck in a formatting loop (repeated "Your last output was not a
+    # valid tool call..." warnings) cannot grow a single user-message without
+    # bound and eventually blow the provider's token limit.
+    _MAX_MERGED_CHARS = 4000  # ~1 000 tokens: enough context, safe headroom
     merged = []
     for m in system_msg + pruned_history:
-        if merged and merged[-1].get("role") == m.get("role") and m.get("role") in ("user", "assistant"):
+        is_summary = "HISTORY SUMMARY:" in m.get("content", "")
+        prev_is_summary = merged and "HISTORY SUMMARY:" in merged[-1].get("content", "")
+        if (
+            merged
+            and merged[-1].get("role") == m.get("role")
+            and m.get("role") in ("user", "assistant")
+            and not is_summary
+            and not prev_is_summary
+        ):
+            combined = merged[-1]["content"] + "\n\n" + m["content"]
+            if len(combined) > _MAX_MERGED_CHARS:
+                combined = "...[truncated]...\n\n" + combined[-_MAX_MERGED_CHARS:]
             merged[-1] = {
                 "role": m.get("role"),
-                "content": merged[-1]["content"] + "\n\n" + m["content"]
+                "content": combined,
             }
         else:
             merged.append(m.copy())
@@ -517,7 +506,7 @@ def prune_messages(messages: list, max_tail_messages: int = 80) -> list:
 
 def make_openai_policy(
     client: "OpenAI",
-    model_name: str = MODEL_NAME,
+    model_name: str = "gemini-3.1-flash-lite-preview",
     temperature: float = 0.2,
     *,
     call_timeout: float = LLM_CALL_TIMEOUT,
@@ -537,18 +526,29 @@ def make_openai_policy(
     def _policy(messages: list[dict[str, Any]]) -> dict[str, Any]:
         last_err: Optional[str] = None
         sleep_s = base_rate_limit_sleep
-        
-        # Google/Gemini models prefer 'auto' for function calling, while 
+
+        # Google/Gemini models prefer 'auto' for function calling, while
         # open-source models (Llama, etc) often need 'required' to enforce it.
         if "gpt-oss" in model_name.lower():
-            # Apply Harmony Patch for GPT-OSS
             dynamic_tool_choice = {"type": "function", "function": {"name": "analyze_board"}} if len(messages) <= 2 else "auto"
             dynamic_temp = 1.0
         else:
             dynamic_tool_choice = "auto" if any(x in model_name.lower() for x in ("gemini", "google")) else "required"
             dynamic_temp = temperature
 
-        for attempt in range(3):
+        # Bug 3 fix: separate hard-failure counter from transient server errors.
+        # A 429/503 rate-limit MUST NOT consume a hard-fail slot — the model is
+        # blameless for server congestion.  We use:
+        #   hard_fails  — incremented only on genuine API / parse errors (max 3)
+        #   rate_retries — incremented on 429/503 only (max 10, with back-off)
+        MAX_HARD_FAILS = 3
+        MAX_RATE_RETRIES = 10
+        hard_fails = 0
+        rate_retries = 0
+        attempt = 0  # total attempts for logging
+
+        while hard_fails < MAX_HARD_FAILS and rate_retries < MAX_RATE_RETRIES:
+            attempt += 1
             try:
                 pruned_msgs = prune_messages(messages, max_tail_messages=80)
                 completion = client.chat.completions.create(
@@ -591,7 +591,7 @@ def make_openai_policy(
                                 failed_gen = e.response.json().get("error", {}).get("failed_generation", "")
                             except Exception:
                                 pass
-                        
+
                         if not failed_gen:
                             m_err = re.search(r"'failed_generation':\s*(['\"])(.*?)\1(?:[,\}])", last_err, re.DOTALL)
                             if m_err:
@@ -600,21 +600,17 @@ def make_openai_policy(
                         if failed_gen:
                             m_xml = re.search(r"<function=([a-zA-Z0-9_]+)(.*?)(?:</function>|>)", failed_gen, re.DOTALL)
                             if m_xml:
-                                tool_name = m_xml.group(1)
+                                tool_name_xml = m_xml.group(1)
                                 json_str = m_xml.group(2).strip()
                                 if not json_str.startswith("{"):
                                     json_str = "{" + json_str
-                                
                                 raw_dict = json.loads(json_str)
                                 args = raw_dict.get("arguments", raw_dict) if isinstance(raw_dict.get("arguments"), dict) else raw_dict
-                                
-                                # Promote flat fields if they were outside 'arguments'
                                 for field in ("threat_analysis", "candidate_moves", "justification"):
                                     if field not in args and field in raw_dict:
                                         args[field] = raw_dict[field]
-                                
-                                return {"tool": tool_name, "arguments": args, "raw": failed_gen}
-                            
+                                return {"tool": tool_name_xml, "arguments": args, "raw": failed_gen}
+
                             parsed = _extract_first_tool_call(failed_gen)
                             if parsed:
                                 return parsed
@@ -627,7 +623,7 @@ def make_openai_policy(
                     or "timed out" in err_lower
                     or type(e).__name__ in ("APITimeoutError", "ReadTimeout", "ConnectTimeout")
                 )
-                # Detect rate-limit / server overload errors
+                # Detect rate-limit / server overload — these must NOT consume a hard-fail slot
                 is_rate_limit = (
                     "429" in last_err
                     or "quota" in err_lower
@@ -638,24 +634,42 @@ def make_openai_policy(
 
                 if is_timeout:
                     log_info(
-                        f"   ⏱ [{model_name}] API timeout on attempt {attempt + 1} "
+                        f"   ⏱ [{model_name}] API timeout on attempt {attempt} "
                         f"(limit={call_timeout}s). Retrying immediately."
                     )
-                    # No extra sleep on pure timeout — server may just be slow.
-                    continue
+                    # Timeout counts as a hard fail — the call actually died.
+                    hard_fails += 1
+                    continue  # retry immediately, no sleep
 
                 if is_rate_limit:
                     wait = min(sleep_s, 60.0)
                     log_info(
-                        f"   🚦 [{model_name}] Rate limit / 503 on attempt {attempt + 1}. "
+                        f"   🚦 [{model_name}] Rate limit / 503 on attempt {attempt}. "
                         f"Backing off {wait:.0f}s before retry..."
                     )
                     time.sleep(wait)
-                    sleep_s = min(sleep_s * 2, 60.0)  # exponential back-off
+                    sleep_s = min(sleep_s * 2, 60.0)
+                    rate_retries += 1
                     continue
 
-                # Any other error: log and abort retries.
-                log_info(f"   ❌ [{model_name}] API error on attempt {attempt + 1}: {last_err}")
+                is_loop_flag = "loop" in err_lower and "content" in err_lower
+                if is_loop_flag:
+                    log_info(
+                        f"   🔄 [{model_name}] Loop detection flag on attempt {attempt}. "
+                        "Injecting anti-loop tag and raising temperature for retry..."
+                    )
+                    if messages and messages[0].get("role") == "system":
+                        if "[ignoring loop detection]" not in messages[0].get("content", ""):
+                            messages[0] = dict(messages[0])
+                            messages[0]["content"] = (
+                                messages[0]["content"] + "\n[ignoring loop detection]"
+                            )
+                    dynamic_temp = min(dynamic_temp + 0.4, 1.0)
+                    rate_retries += 1
+                    continue
+
+                log_info(f"   ❌ [{model_name}] API error on attempt {attempt}: {last_err}")
+                hard_fails += 1
                 break
 
         return {
@@ -720,8 +734,9 @@ def _prune_buffer(
 ) -> list[dict[str, Any]]:
     """Compact the message history to prevent token bloat.
 
-    Keeps the system prompt, then a compact summary of all moves played,
-    then the last `window_size` messages of full dialogue history.
+    Keeps the system prompt, then a fresh compact summary of all moves
+    played, then the last `window_size` messages of full dialogue history
+    (with stale HISTORY SUMMARY messages stripped from the tail).
     """
     if len(buffer) <= window_size + 2:
         return buffer
@@ -730,7 +745,6 @@ def _prune_buffer(
     new_buffer = [buffer[0]]
 
     # 2. Add a compact summary of the entire game history so far.
-    # We extract this from the provided move_history.
     history_str = " ".join([m.get("uci", "?") for m in move_history])
     new_buffer.append(
         {
@@ -742,8 +756,16 @@ def _prune_buffer(
         }
     )
 
-    # 3. Add the sliding window of most recent messages.
-    new_buffer.extend(buffer[-window_size:])
+    # 3. Add the sliding window of most recent messages, but strip any
+    #    pre-existing HISTORY SUMMARY entries first (Bug 4 fix).
+    #    Without this, the -window_size tail almost certainly contains the
+    #    previous iteration's summary, leading to redundant copies accumulating
+    #    over a long game and wasting the entire context budget.
+    clean_tail = [
+        m for m in buffer
+        if "HISTORY SUMMARY:" not in str(m.get("content", ""))
+    ]
+    new_buffer.extend(clean_tail[-window_size:])
 
     return new_buffer
 
@@ -756,8 +778,8 @@ def run_episode(
     game_idx: int = 0,
     max_plies: int = MAX_PLIES,
     step_delay: float = STEP_DELAY_SECONDS,
-    model_white_name: str = MODEL_WHITE,
-    model_black_name: str = MODEL_BLACK,
+    model_white_name: str = "white",
+    model_black_name: str = "black",
     http_client: Optional[httpx.Client] = None,
 ) -> EpisodeResult:
     """Play one game in a single HTTP episode by alternating the two policies.
@@ -839,13 +861,26 @@ def run_episode(
                         ),
                     }
                 )
-                # Report the malformed call to the env via /state -> the env
-                # exposes `record_malformed_call` indirectly via an extra
-                # metadata action is not wired, so we simulate the penalty by
-                # logging it in the step row; the real penalty still shows up
-                # when the env finalises (we overcount by 1 clean call if the
-                # server-side env didn't see it). Keep behaviour simple and
-                # predictable: print the [STEP] row and retry.
+                # Force the environment to penalize the format bucket by sending
+                # an intentionally malformed analyze_board call (missing the
+                # required schema fields).
+                step_payload = {
+                    "action": {
+                        "type": "call_tool",
+                        "tool_name": "analyze_board",
+                        "arguments": {
+                            "threat_analysis": "",
+                            "candidate_moves": [],
+                            "justification": ""
+                        }
+                    }
+                }
+                if episode_id:
+                    step_payload["episode_id"] = episode_id
+                try:
+                    client.post(f"{env_url}/step", json=step_payload, timeout=60.0)
+                except Exception:
+                    pass
                 result.steps.append(
                     {
                         "ply": ply,
@@ -936,31 +971,38 @@ def run_episode(
             # Keep the opponent roughly aware that a move was played. For
             # `make_move`, append the public UCI so the opponent can plan.
             if tool == "make_move":
-                fen = metadata.get("fen") or fen_after
-                # Record the move in the episode's move history for JSON logs.
-                result.move_history.append({
-                    "color": turn,
-                    "uci": args.get("uci_move", ""),
-                    "cp_loss": _parse_result_field(tool_out, "cp_loss", 0),
-                    "move_score": _parse_result_field(tool_out, "move_score", 0.0),
-                })
+                is_strike_one = (
+                    isinstance(tool_out, str)
+                    and "ILLEGAL MOVE (strike 1/2)" in tool_out
+                )
 
-                if fen:
-                    try:
-                        import chess
-                        board_str = str(chess.Board(fen))
-                        indented_board = "\n".join("      " + line for line in board_str.splitlines())
-                        log_info(f"   --- Board after ply {ply} ({args.get('uci_move', '?')}) ---\n{indented_board}")
-                    except Exception:
-                        pass
+                if not is_strike_one and not is_error:
+                    fen = metadata.get("fen") or fen_after
+                    result.move_history.append({
+                        "color": turn,
+                        "uci": args.get("uci_move", ""),
+                        "cp_loss": _parse_result_field(tool_out, "cp_loss", 0),
+                        "move_score": _parse_result_field(tool_out, "move_score", 0.0),
+                    })
 
-                if not done:
-                    opp = "black" if turn == "white" else "white"
-                    opp_turn_msg = (
-                        f"Opponent ({turn}) played {args.get('uci_move', '?')}. "
-                        f"Board FEN: {fen or '(unknown)'}. Your move."
-                    )
-                    buffers[opp].append({"role": "user", "content": opp_turn_msg})
+                    if fen:
+                        try:
+                            import chess as _chess
+                            board_str = str(_chess.Board(fen))
+                            indented_board = "\n".join("      " + line for line in board_str.splitlines())
+                            log_info(f"   --- Board after ply {ply} ({args.get('uci_move', '?')}) ---\n{indented_board}")
+                        except Exception:
+                            pass
+
+                    if not done:
+                        opp = "black" if turn == "white" else "white"
+                        opp_turn_msg = (
+                            f"Opponent ({turn}) played {args.get('uci_move', '?')}. "
+                            f"Board FEN: {fen or '(unknown)'}. Your move."
+                        )
+                        buffers[opp].append({"role": "user", "content": opp_turn_msg})
+            else:
+                is_strike_one = False
 
             result.steps.append(
                 {
@@ -977,7 +1019,6 @@ def run_episode(
             _emit_step(ply, turn, f"{tool}({_args_repr(args)})", reward, done, None)
 
             if done:
-                # Pull final per-color rewards + bucket from metadata.
                 final_map = metadata.get("final_reward") or {}
                 result.final_reward = {
                     "white": _clamp_phase2(final_map.get("white", reward)),
@@ -989,17 +1030,6 @@ def run_episode(
                 result.plies = ply
                 break
 
-            # Flip side only on a successful `make_move`. Tools like
-            # `analyze_board` / `list_legal_moves` / `evaluate_position` /
-            # `ping_humanhelper` leave the turn with the same color so the
-            # agent can immediately follow up with another action.
-            # Also do NOT flip on a Strike-1 illegal move warning — the same
-            # player must retry before the opponent gets to move.
-            is_strike_one = (
-                tool == "make_move"
-                and isinstance(tool_out, str)
-                and "ILLEGAL MOVE (strike 1/2)" in tool_out
-            )
             if tool == "make_move" and not is_strike_one and not is_error:
                 turn = "black" if turn == "white" else "white"
 
@@ -1089,40 +1119,93 @@ def _wait_for_server(env_url: str, client: httpx.Client, attempts: int = 30) -> 
 
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="Run a two-model match in Chess Arena.")
+    parser.add_argument("--white", type=str, help="Model name for White")
+    parser.add_argument("--black", type=str, help="Model name for Black")
+    args = parser.parse_args()
+
     if OpenAI is None:
         log_info("ERROR: openai package not installed. pip install openai.")
-        sys.exit(1)
-    if not API_KEY:
-        log_info(
-            "ERROR: set HF_TOKEN / OPENAI_API_KEY / API_KEY before running inference."
-        )
         sys.exit(1)
 
     try:
         from dotenv import dotenv_values
-        env_groq = dotenv_values(".env.local")
-        env_google = dotenv_values(".env")
+        env_google = dotenv_values(str(Path(__file__).resolve().parent / ".env"))
+        env_groq = dotenv_values(str(Path(__file__).resolve().parent / ".env.local"))
     except ImportError:
-        env_groq = {}
         env_google = {}
+        env_groq = {}
+
+    google_url = env_google.get("API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+    google_key = env_google.get("HF_TOKEN") or env_google.get("OPENAI_API_KEY") or os.getenv("HF_TOKEN", "")
 
     groq_url = env_groq.get("API_BASE_URL", "https://api.groq.com/openai/v1")
-    groq_key = env_groq.get("HF_TOKEN") or env_groq.get("OPENAI_API_KEY") or API_KEY
-    
-    google_url = env_google.get("API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
-    google_key = env_google.get("HF_TOKEN") or env_google.get("OPENAI_API_KEY") or API_KEY
+    groq_key = env_groq.get("HF_TOKEN") or env_groq.get("OPENAI_API_KEY") or os.getenv("HF_TOKEN", "")
 
-    # White uses Google, Black uses Groq
-    white_model = env_google.get("MODEL_WHITE", "gemini-3.1-pro-preview")
-    black_model = env_groq.get("MODEL_BLACK", "openai/gpt-oss-120b")
+    if not google_key and not groq_key:
+        log_info("ERROR: no API keys found in .env or .env.local.")
+        sys.exit(1)
+
+    # Collect all 8 models with their provider tags
+    model_pool: list[tuple[str, str]] = []  # (model_name, provider)
+    for i in range(1, 5):
+        name = env_google.get(f"GOOGLE_MODEL_{i}")
+        if name:
+            model_pool.append((name, "google"))
+    for i in range(1, 5):
+        name = env_groq.get(f"GROQ_MODEL_{i}")
+        if name:
+            model_pool.append((name, "groq"))
+
+    if len(model_pool) < 2:
+        log_info(f"ERROR: need at least 2 models in the pool, found {len(model_pool)}.")
+        sys.exit(1)
+
+    def _resolve_model(requested_name: Optional[str], default_pool_idx: int) -> tuple[str, str]:
+        if not requested_name:
+            import random
+            return random.choice(model_pool)
+        
+        # Look for the exact name in the pool to infer its provider
+        match = [m for m in model_pool if m[0] == requested_name]
+        if match:
+            return match[0]
+        # Not in pool, guess provider based on name or fallback to google
+        provider = "groq" if any(x in requested_name.lower() for x in ("llama", "mixtral", "gemma", "deepseek")) else "google"
+        return (requested_name, provider)
+
+    if args.white and args.black:
+        white_model, white_provider = _resolve_model(args.white, 0)
+        black_model, black_provider = _resolve_model(args.black, 1)
+    else:
+        # Randomly pick two distinct models and assign random colours
+        import random
+        pair = random.sample(model_pool, 2)
+        random.shuffle(pair)
+        white_model, white_provider = pair[0]
+        black_model, black_provider = pair[1]
+        
+        if args.white:
+            white_model, white_provider = _resolve_model(args.white, 0)
+        if args.black:
+            black_model, black_provider = _resolve_model(args.black, 1)
+
+    def _make_client(provider: str) -> "OpenAI":
+        if provider == "google":
+            return OpenAI(base_url=google_url, api_key=google_key)
+        return OpenAI(base_url=groq_url, api_key=groq_key)
+
+    provider_tag = {"google": "Google/Gemini", "groq": "Groq"}
 
     log_info("═" * 60)
-    log_info(" Chess Arena — Two-Model Matchup")
+    log_info(" Chess Arena — Random Two-Model Matchup")
     log_info("═" * 60)
-    log_info(f" WHITE : {white_model} (Google)")
-    log_info(f" BLACK : {black_model} (Groq)")
+    log_info(f" WHITE : {white_model} ({provider_tag[white_provider]})")
+    log_info(f" BLACK : {black_model} ({provider_tag[black_provider]})")
     log_info(f" Delay : {STEP_DELAY_SECONDS}s/turn  |  Timeout: {LLM_CALL_TIMEOUT}s/call")
     log_info(f" Games : {NUM_GAMES}  |  Max plies: {MAX_PLIES}")
+    log_info(f" Pool  : {len(model_pool)} models available")
     log_info("═" * 60)
 
     with httpx.Client(timeout=60.0) as http_client:
@@ -1132,9 +1215,8 @@ def main() -> None:
             sys.exit(1)
         log_info("Server ready.\n")
 
-        # Create two separate OpenAI clients for White (Google) and Black (Groq)
-        client_white = OpenAI(base_url=google_url, api_key=google_key)
-        client_black = OpenAI(base_url=groq_url, api_key=groq_key)
+        client_white = _make_client(white_provider)
+        client_black = _make_client(black_provider)
 
         policy_white = make_openai_policy(
             client_white,
@@ -1154,6 +1236,8 @@ def main() -> None:
         run_logs = {
             "model_white": white_model,
             "model_black": black_model,
+            "white_provider": white_provider,
+            "black_provider": black_provider,
             "timestamp": datetime.now().isoformat(),
             "step_delay_seconds": STEP_DELAY_SECONDS,
             "tasks": [],
@@ -1199,7 +1283,6 @@ def main() -> None:
                 flush=True,
             )
 
-            # Show final rewards on stderr for quick visibility.
             log_info(f"\n{'─'*60}")
             log_info(f"  🏁 Game {game_idx + 1} finished — {result.result or 'unfinished'}")
             log_info(f"  ⬜ WHITE ({white_model}): final reward = {_fmt(result.final_reward['white'])}")
@@ -1226,4 +1309,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

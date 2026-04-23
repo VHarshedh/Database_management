@@ -41,7 +41,7 @@ _SF_PATHS = [
     Path("/usr/games/stockfish"),
     Path("/usr/local/bin/stockfish"),
 ]
-SF_DEPTH = int(os.getenv("VIZ_SF_DEPTH", "20"))
+SF_DEPTH = int(os.getenv("VIZ_SF_DEPTH", "15"))
 
 
 def _find_stockfish() -> Optional[str]:
@@ -71,6 +71,16 @@ def _build_engine() -> Optional[Any]:
 
 
 _ENGINE = _build_engine()
+
+# Ensure the Stockfish subprocess is cleaned up on exit to avoid zombie processes.
+import atexit
+def _shutdown_engine():
+    if _ENGINE is not None:
+        try:
+            _ENGINE.quit()
+        except Exception:
+            pass
+atexit.register(_shutdown_engine)
 
 
 def _sf_eval_cp(fen: str) -> Optional[int]:
@@ -157,7 +167,8 @@ def _compute_evals(moves: List[Dict[str, Any]]) -> List[Optional[int]]:
         try:
             board.push_uci(uci)
             positions.append(board.fen())
-        except Exception:
+        except Exception as exc:
+            print(f"[visualizer] WARNING: Skipping bad UCI '{uci}' at move {len(positions)}: {exc}")
             positions.append(board.fen())  # keep last valid position
 
     return [_sf_eval_cp(fen) for fen in positions]
@@ -196,15 +207,26 @@ def _eval_bar_html(cp: Optional[int]) -> str:
 # ---------------------------------------------------------------------------
 
 _RESULT_LABELS = {
-    "checkmate_white": ("♔ White wins by Checkmate", "#1d5c2e"),
-    "checkmate_black": ("♚ Black wins by Checkmate", "#1a2b5e"),
-    "dq_illegal_white": ("⚠️ White Disqualified — 2 Illegal Moves", "#6b2d2d"),
-    "dq_illegal_black": ("⚠️ Black Disqualified — 2 Illegal Moves", "#6b2d2d"),
-    "draw_stalemate":   ("½-½  Draw by Stalemate", "#3a4a5c"),
-    "draw_repetition":  ("½-½  Draw by Repetition", "#3a4a5c"),
-    "draw_50_move":     ("½-½  Draw by 50-Move Rule", "#3a4a5c"),
-    "unfinished":       ("⏳  Game did not finish (ply limit reached)", "#5c4a1a"),
+    "checkmate_white":           ("♔ White wins by Checkmate",              "#1d5c2e"),
+    "checkmate_black":           ("♚ Black wins by Checkmate",              "#1a2b5e"),
+    "resign_white":              ("♚ Black wins — White Resigned",           "#1a2b5e"),
+    "resign_black":              ("♔ White wins — Black Resigned",           "#1d5c2e"),
+    "dq_illegal_white":          ("⚠️ White Disqualified — 2 Illegal Moves", "#6b2d2d"),
+    "dq_illegal_black":          ("⚠️ Black Disqualified — 2 Illegal Moves", "#6b2d2d"),
+    "dq_eval_abuse_white":       ("⚠️ White Disqualified — Eval Abuse",      "#6b2d2d"),
+    "dq_eval_abuse_black":       ("⚠️ Black Disqualified — Eval Abuse",      "#6b2d2d"),
+    # python-chess Termination enum names (lowercased) — primary keys
+    "draw_stalemate":            ("½-½  Draw by Stalemate",                  "#3a4a5c"),
+    "draw_threefold_repetition": ("½-½  Draw by Repetition",                "#3a4a5c"),
+    "draw_fifty_moves":          ("½-½  Draw by 50-Move Rule",              "#3a4a5c"),
+    "draw_insufficient_material":("½-½  Draw — Insufficient Material",      "#3a4a5c"),
+    "draw_variant_end":          ("½-½  Draw (Variant End)",                "#3a4a5c"),
+    # Legacy short-form aliases kept for backwards compat with older logs
+    "draw_repetition":           ("½-½  Draw by Repetition",                "#3a4a5c"),
+    "draw_50_move":              ("½-½  Draw by 50-Move Rule",              "#3a4a5c"),
+    "unfinished":                ("⏳  Game did not finish (ply limit reached)", "#5c4a1a"),
 }
+
 
 
 def _result_banner(result_str: Optional[str], at_end: bool) -> str:
@@ -227,12 +249,18 @@ def _move_list_html(moves: List[Dict[str, Any]], current_ply: int) -> str:
     san_moves: List[str] = []
     for mv in moves:
         uci = mv.get("uci", "")
+        # Bug 3 fix: always push the move so the board stays in sync even when
+        # board.san() raises (e.g. for valid-UCI but engine-illegal edge cases).
+        # board.san() is called inside try; push happens in finally.
+        move_obj = None
         try:
-            move = chess.Move.from_uci(uci)
-            san = board.san(move)
-            board.push(move)
+            move_obj = chess.Move.from_uci(uci)
+            san = board.san(move_obj)
         except Exception:
-            san = uci
+            san = uci  # fallback to raw UCI for display only
+        finally:
+            if move_obj is not None and move_obj in board.legal_moves:
+                board.push(move_obj)
         san_moves.append(san)
 
     rows = []
@@ -254,15 +282,15 @@ def _move_list_html(moves: List[Dict[str, Any]], current_ply: int) -> str:
             f"</tr>"
         )
 
-    # Compute scroll position: auto-scroll to highlight
+    # Bug 8 fix: do NOT embed onload or <script> — Gradio 4.x strips both.
+    # The auto-scroll JS is wired via slider_ply.change(..., js=...) in build_app().
+    # Store the target row index as a data attribute for the JS to read.
     scroll_to_row = max(0, current_ply // 2 - 3)
     scroll_px = scroll_to_row * 24
 
     table = f"<table style='border-collapse:collapse;width:100%;font-size:13px;'>{''.join(rows)}</table>"
     return f"""
-<div id="movelist" style="height:280px;overflow-y:auto;background:#f8f9fa;border-radius:6px;padding:6px;border:1px solid #dee2e6;scrollbar-width:thin;"
-     onload="document.getElementById('movelist').scrollTop={scroll_px}">
-  <script>document.getElementById('movelist').scrollTop={scroll_px};</script>
+<div id="movelist" data-scrolltop="{scroll_px}" style="height:280px;overflow-y:auto;background:#f8f9fa;border-radius:6px;padding:6px;border:1px solid #dee2e6;scrollbar-width:thin;">
   {table}
 </div>"""
 
@@ -381,11 +409,11 @@ def _get_task(game_name: str, data: Dict[str, Any]):
 def load_game(game_name: str, data: Dict[str, Any]) -> Tuple:
     """Called when game dropdown changes. Returns slider update + initial render."""
     if not game_name or not data:
-        return (gr.update(maximum=0, value=0), [], *[""] * 8)
+        return (gr.update(maximum=0, value=0), 0, [], *[""] * 8)
 
     task = _get_task(game_name, data)
     if task is None:
-        return (gr.update(maximum=0, value=0), [], *[""] * 8)
+        return (gr.update(maximum=0, value=0), 0, [], *[""] * 8)
 
     moves = _extract_moves(task)
     total = len(moves)
@@ -491,12 +519,28 @@ def build_app() -> gr.Blocks:
             show_progress="hidden",
         )
 
-        # 3. Slider → render
+        # 3. Slider → render + Bug 8 fix: use Gradio's native JS hook for auto-scroll
+        # so the movelist div scrolls to the highlighted row.  Gradio 4.x strips
+        # inline <script> and onload attributes from gr.HTML, but js= on event
+        # handlers runs in the browser before the Python round-trip.
+        _SCROLL_JS = """
+        (...args) => {
+            setTimeout(() => {
+                const el = document.getElementById('movelist');
+                if (el) {
+                    const target = parseInt(el.dataset.scrolltop || '0', 10);
+                    el.scrollTop = target;
+                }
+            }, 50);
+            return args;
+        }
+        """
         slider_ply.change(
             fn=on_slider,
             inputs=[slider_ply, game_dropdown, log_data, evals_cache],
             outputs=_render_outputs,
             show_progress="hidden",
+            js=_SCROLL_JS,
         )
 
         # 4. Navigation buttons

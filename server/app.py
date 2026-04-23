@@ -9,19 +9,15 @@
 from fastapi import Request
 import json
 
+from openenv.core.env_server.http_server import create_app
+from openenv.core.env_server.mcp_types import (
+    CallToolAction,
+    CallToolObservation,
+)
+
 try:
-    from openenv.core.env_server.http_server import create_app
-    from openenv.core.env_server.mcp_types import (
-        CallToolAction,
-        CallToolObservation,
-    )
     from .chess_environment import ChessEnvironment, _current_episode_id
-except ImportError:  # standalone layout (openenv installed from pip)
-    from openenv.core.env_server.http_server import create_app
-    from openenv.core.env_server.mcp_types import (
-        CallToolAction,
-        CallToolObservation,
-    )
+except ImportError:
     from server.chess_environment import ChessEnvironment, _current_episode_id
 
 

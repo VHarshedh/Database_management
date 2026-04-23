@@ -95,7 +95,11 @@ def run_smoke_tests(base: str) -> list[str]:
             "action": {
                 "type": "call_tool",
                 "tool_name": "analyze_board",
-                "arguments": {"thought": UNIVERSAL_THOUGHT},
+                "arguments": {
+                    "threat_analysis": UNIVERSAL_THOUGHT,
+                    "candidate_moves": ["e2e4", "d2d4"],
+                    "justification": UNIVERSAL_THOUGHT,
+                },
             },
             "episode_id": episode_id,
             "timeout_s": 30,
@@ -115,7 +119,11 @@ def run_smoke_tests(base: str) -> list[str]:
             "action": {
                 "type": "call_tool",
                 "tool_name": "list_legal_moves",
-                "arguments": {"thought": UNIVERSAL_THOUGHT},
+                "arguments": {
+                    "threat_analysis": UNIVERSAL_THOUGHT,
+                    "candidate_moves": ["e2e4", "d2d4"],
+                    "justification": UNIVERSAL_THOUGHT,
+                },
             },
             "episode_id": episode_id,
             "timeout_s": 30,
@@ -135,7 +143,9 @@ def run_smoke_tests(base: str) -> list[str]:
                 "type": "call_tool",
                 "tool_name": "make_move",
                 "arguments": {
-                    "thought": UNIVERSAL_THOUGHT,
+                    "threat_analysis": UNIVERSAL_THOUGHT,
+                    "candidate_moves": ["e2e4", "d2d4"],
+                    "justification": UNIVERSAL_THOUGHT,
                     "uci_move": "e2e4",
                 },
             },
@@ -159,7 +169,9 @@ def run_smoke_tests(base: str) -> list[str]:
                 "type": "call_tool",
                 "tool_name": "ping_humanhelper",
                 "arguments": {
-                    "thought": UNIVERSAL_THOUGHT,
+                    "threat_analysis": UNIVERSAL_THOUGHT,
+                    "candidate_moves": ["e2e4", "d2d4"],
+                    "justification": UNIVERSAL_THOUGHT,
                     "reason": "Need a hint on best reply to e4.",
                 },
             },
@@ -182,7 +194,11 @@ def run_smoke_tests(base: str) -> list[str]:
             "action": {
                 "type": "call_tool",
                 "tool_name": "evaluate_position",
-                "arguments": {"thought": UNIVERSAL_THOUGHT},
+                "arguments": {
+                    "threat_analysis": UNIVERSAL_THOUGHT,
+                    "candidate_moves": ["e2e4", "d2d4"],
+                    "justification": UNIVERSAL_THOUGHT,
+                },
             },
             "episode_id": episode_id,
             "timeout_s": 30,
@@ -202,7 +218,11 @@ def run_smoke_tests(base: str) -> list[str]:
             "action": {
                 "type": "call_tool",
                 "tool_name": "resign_game",
-                "arguments": {"thought": "Position looks lost; resigning."},
+                "arguments": {
+                    "threat_analysis": "Position looks lost; resigning.",
+                    "candidate_moves": ["e2e4", "d2d4"],
+                    "justification": "Position looks lost; resigning.",
+                },
             },
             "episode_id": episode_id,
             "timeout_s": 30,
