@@ -26,7 +26,7 @@ Reward decomposition (sums to at most 0.99):
 
 Trap penalties subtract only from their OWN bucket, never cross-bucket:
 
-  - `ping_humanhelper`                -> format : -0.03 each, does NOT end game
+  - `ping_humanhelper`                -> format : -0.3 each, does NOT end game
   - Malformed tool call / bad UCI     -> format : -0.05 each + ratio drop
   - `evaluate_position` (each call)   -> sf_acc : -0.04 each
   - 6th `evaluate_position` same side -> outcome: DQ (0 / 0.35) + episode ends
@@ -96,7 +96,7 @@ OUTCOME_DQ_WIN = 0.35       # opponent got themselves DQed - partial credit
 # Trap penalties - each one hits a SPECIFIC bucket, never cross-bucket.
 EVAL_CALL_LIMIT = 5             # 6th call on the same side = DQ
 EVAL_BUCKET_PENALTY = 0.04      # each eval call docks sf_acc
-PING_BUCKET_PENALTY = 0.03      # each ping docks format bucket
+PING_BUCKET_PENALTY = 0.3       # each ping docks format bucket
 ILLEGAL_FORMAT_PENALTY = 0.05   # each malformed call docks format bucket
 
 # Chess concept keywords for strategic justification scoring.
@@ -109,7 +109,7 @@ CHESS_CONCEPTS = [
 CAPTURE_SYNONYMS = ["capture", "takes", "exchange", "recapture", "trade", "material"]
 
 # Stockfish scoring curve.
-SF_DEPTH = 10
+SF_DEPTH = 15
 SF_BLUNDER_CP = 300   # cp loss that maps the unit score to 0.0
 SF_MATE_CP = 10000    # mate eval substituted as a large cp value
 
@@ -154,29 +154,18 @@ def _resolve_stockfish_path() -> Optional[str]:
     return None
 
 
+# ... existing code ...
 class _StockfishAdapter:
-    """Thin adapter around the `stockfish` python wrapper.
+    """Thin adapter around the `chess.engine` python wrapper."""
 
-    Kept optional so the env can still be imported / unit-tested on machines
-    where the Stockfish binary isn't available - in that degraded mode,
-    Stockfish accuracy scoring falls back to a neutral score of 0.5 per move.
-    """
-
-    def __init__(self, depth: int = SF_DEPTH) -> None:
+    # Added *args and **kwargs to safely absorb legacy arguments like 'depth'
+    def __init__(self, bin_path: str = "engine/stockfish.exe", *args, **kwargs) -> None:
+        self.bin_path = bin_path
         self._engine = None
-        if Stockfish is None:
-            return
-        path = _resolve_stockfish_path()
-        if not path:
-            # No Stockfish binary available on this runtime; fall back to
-            # neutral per-move scoring (0.5) without trying to spawn the
-            # engine - this avoids a noisy `Stockfish.__del__` traceback
-            # when the `stockfish` library's Popen fails.
-            return
         try:
-            self._engine = Stockfish(path=path, depth=depth)
-        except Exception:
-            self._engine = None
+            self._engine = chess.engine.SimpleEngine.popen_uci(self.bin_path)
+        except Exception as e:
+            print(f"[StockfishAdapter] Warning: Engine not loaded. {e}")
 
     def close(self) -> None:
         """Explicitly shut down the Stockfish subprocess to avoid zombie processes."""
@@ -199,13 +188,21 @@ class _StockfishAdapter:
         if self._engine is None:
             return 0
         try:
-            self._engine.set_fen_position(fen)
-            ev = self._engine.get_evaluation() or {}
-            if ev.get("type") == "mate":
-                mate_in = int(ev.get("value", 0))
+            board = chess.Board(fen)
+            # Evaluate for 30 seconds
+            limit = chess.engine.Limit(time=30.0)
+            info = self._engine.analyse(board, limit=limit)
+            score = info["score"].white() if board.turn == chess.WHITE else info["score"].black()
+            
+            # Note: You should ensure SF_MATE_CP is defined globally in your file, e.g., SF_MATE_CP = 10000
+            SF_MATE_CP = 10000 
+            
+            if score.is_mate():
+                mate_in = score.mate()
                 sign = 1 if mate_in > 0 else -1
                 return sign * SF_MATE_CP
-            return int(ev.get("value", 0))
+            
+            return score.score() or 0
         except Exception:
             return 0
 
@@ -214,17 +211,70 @@ class _StockfishAdapter:
         if self._engine is None:
             return "Stockfish engine unavailable in this runtime."
         try:
-            self._engine.set_fen_position(fen)
-            ev = self._engine.get_evaluation() or {}
-            best = self._engine.get_best_move() or "none"
+            board = chess.Board(fen)
+            # Evaluate for 30 seconds
+            limit = chess.engine.Limit(time=30.0)
+            info = self._engine.analyse(board, limit=limit)
+            score = info["score"].white()
+            
+            best_move = "none"
+            if "pv" in info and info["pv"]:
+                best_move = info["pv"][0].uci()
+                
+            eval_type = "mate" if score.is_mate() else "cp"
+            value = score.mate() if score.is_mate() else score.score()
+            
             return (
-                f"eval_type={ev.get('type', 'cp')} "
-                f"value={ev.get('value', 0)} "
-                f"best_move={best}"
+                f"eval_type={eval_type} "
+                f"value={value or 0} "
+                f"best_move={best_move}"
             )
         except Exception as e:
             return f"Stockfish error: {e}"
 
+    def score_move(self, board: chess.Board, move: chess.Move) -> float:
+        """
+        Compare the chosen move's eval against the absolute best engine move.
+        Returns a scaled accuracy score [0.0, 1.0].
+        """
+        if self._engine is None:
+            return 0.5  # Neutral fallback if no engine
+
+        try:
+            limit = chess.engine.Limit(time=30.0) 
+            
+            info_before = self._engine.analyse(board, limit=limit)
+            best_eval = info_before["score"].white()
+
+            board.push(move)
+            info_after = self._engine.analyse(board, limit=limit)
+            board.pop()
+            
+            actual_eval = info_after["score"].white()
+
+            loss = best_eval.score(mate_score=10000) - actual_eval.score(mate_score=10000)
+            loss = max(0, loss)
+
+            scaled_score = max(0.0, 1.0 - (loss / 500.0))
+            return scaled_score
+
+        except Exception as e:
+            print(f"[StockfishAdapter] Evaluation failed: {e}")
+            return 0.5
+
+    def _get_eval(self, board: chess.Board) -> str:
+        """Helper to get a text string of the current evaluation for the agent."""
+        if not self.is_ready or self.engine is None:
+            return "Engine unavailable."
+        try:
+            # 3.0 second limit for evaluating the trap position
+            info = self.engine.analyse(board, limit=chess.engine.Limit(time=3.0))
+            score = info["score"].white()
+            if score.is_mate():
+                return f"Mate in {abs(score.mate())}"
+            return f"CP: {score.score()}"
+        except Exception:
+            return "Evaluation error."
 
 # ===========================================================================
 # Helpers
