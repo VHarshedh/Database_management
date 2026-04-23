@@ -46,6 +46,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 import chess
+import chess.engine
 
 from fastmcp import FastMCP
 from openenv.core.env_server.mcp_environment import MCPEnvironment
@@ -95,8 +96,6 @@ OUTCOME_DQ_WIN = 0.35       # opponent got themselves DQed - partial credit
 
 # Trap penalties - each one hits a SPECIFIC bucket, never cross-bucket.
 EVAL_CALL_LIMIT = 5             # 6th call on the same side = DQ
-EVAL_BUCKET_PENALTY = 0.04      # each eval call docks sf_acc
-PING_BUCKET_PENALTY = 0.3       # each ping docks format bucket
 ILLEGAL_FORMAT_PENALTY = 0.05   # each malformed call docks format bucket
 
 # Chess concept keywords for strategic justification scoring.
@@ -112,8 +111,11 @@ CAPTURE_SYNONYMS = ["capture", "takes", "exchange", "recapture", "trade", "mater
 SF_DEPTH = 15
 SF_BLUNDER_CP = 300   # cp loss that maps the unit score to 0.0
 SF_MATE_CP = 10000    # mate eval substituted as a large cp value
-
-
+# --- MISSING CONSTANTS FOR PHASE 2 MATH ---
+STRIKES_BEFORE_DQ = 2
+W_SF = 0.24
+PING_BUCKET_PENALTY = 0.03
+EVAL_BUCKET_PENALTY = 0.04
 # ===========================================================================
 # Stockfish wrapper
 # ===========================================================================
@@ -158,14 +160,14 @@ def _resolve_stockfish_path() -> Optional[str]:
 class _StockfishAdapter:
     """Thin adapter around the `chess.engine` python wrapper."""
 
-    # Added *args and **kwargs to safely absorb legacy arguments like 'depth'
-    def __init__(self, bin_path: str = "engine/stockfish.exe", *args, **kwargs) -> None:
-        self.bin_path = bin_path
+    def __init__(self, bin_path: str | None = None, *args, **kwargs) -> None:
+        # BUG 2 FIX: Use _resolve_stockfish_path() so it works on Kaggle/Docker
+        self.bin_path = bin_path or _resolve_stockfish_path() or "engine/stockfish.exe"
         self._engine = None
         try:
             self._engine = chess.engine.SimpleEngine.popen_uci(self.bin_path)
         except Exception as e:
-            print(f"[StockfishAdapter] Warning: Engine not loaded. {e}")
+            print(f"[StockfishAdapter] Warning: Engine not loaded from {self.bin_path}. {e}")
 
     def close(self) -> None:
         """Explicitly shut down the Stockfish subprocess to avoid zombie processes."""
@@ -181,22 +183,15 @@ class _StockfishAdapter:
         return self._engine is not None
 
     def evaluate_cp(self, fen: str) -> int:
-        """Return cp eval from the perspective of the side to move.
-
-        Returns 0 if the engine is unavailable. Mate is substituted as +/- SF_MATE_CP.
-        """
         if self._engine is None:
             return 0
         try:
             board = chess.Board(fen)
-            # Evaluate for 30 seconds
-            limit = chess.engine.Limit(time=30.0)
+            limit = chess.engine.Limit(time=0.5)
             info = self._engine.analyse(board, limit=limit)
             score = info["score"].white() if board.turn == chess.WHITE else info["score"].black()
             
-            # Note: You should ensure SF_MATE_CP is defined globally in your file, e.g., SF_MATE_CP = 10000
             SF_MATE_CP = 10000 
-            
             if score.is_mate():
                 mate_in = score.mate()
                 sign = 1 if mate_in > 0 else -1
@@ -207,13 +202,11 @@ class _StockfishAdapter:
             return 0
 
     def describe(self, fen: str) -> str:
-        """Human-readable eval summary for `evaluate_position`."""
         if self._engine is None:
             return "Stockfish engine unavailable in this runtime."
         try:
             board = chess.Board(fen)
-            # Evaluate for 30 seconds
-            limit = chess.engine.Limit(time=30.0)
+            limit = chess.engine.Limit(time=0.5)
             info = self._engine.analyse(board, limit=limit)
             score = info["score"].white()
             
@@ -224,24 +217,16 @@ class _StockfishAdapter:
             eval_type = "mate" if score.is_mate() else "cp"
             value = score.mate() if score.is_mate() else score.score()
             
-            return (
-                f"eval_type={eval_type} "
-                f"value={value or 0} "
-                f"best_move={best_move}"
-            )
+            return f"eval_type={eval_type} value={value or 0} best_move={best_move}"
         except Exception as e:
             return f"Stockfish error: {e}"
 
     def score_move(self, board: chess.Board, move: chess.Move) -> float:
-        """
-        Compare the chosen move's eval against the absolute best engine move.
-        Returns a scaled accuracy score [0.0, 1.0].
-        """
         if self._engine is None:
-            return 0.5  # Neutral fallback if no engine
+            return 0.5 
 
         try:
-            limit = chess.engine.Limit(time=30.0) 
+            limit = chess.engine.Limit(time=0.5) 
             
             info_before = self._engine.analyse(board, limit=limit)
             best_eval = info_before["score"].white()
@@ -261,20 +246,6 @@ class _StockfishAdapter:
         except Exception as e:
             print(f"[StockfishAdapter] Evaluation failed: {e}")
             return 0.5
-
-    def _get_eval(self, board: chess.Board) -> str:
-        """Helper to get a text string of the current evaluation for the agent."""
-        if not self.is_ready or self.engine is None:
-            return "Engine unavailable."
-        try:
-            # 3.0 second limit for evaluating the trap position
-            info = self.engine.analyse(board, limit=chess.engine.Limit(time=3.0))
-            score = info["score"].white()
-            if score.is_mate():
-                return f"Mate in {abs(score.mate())}"
-            return f"CP: {score.score()}"
-        except Exception:
-            return "Evaluation error."
 
 # ===========================================================================
 # Helpers
@@ -328,6 +299,10 @@ class ChessEnvironment(MCPEnvironment):
 
     def _init_fresh_state(self) -> None:
         """Reset all per-episode state. Also called from `reset()`."""
+        # BUG 20 & 7 FIX: Safely kill the old Stockfish process before making a new one
+        if hasattr(self, "_stockfish") and self._stockfish is not None:
+            self._stockfish.close()
+
         self.board: chess.Board = chess.Board()
         self._last_turn_flipped: bool = False
         self.turn_color: str = "white"
@@ -563,33 +538,27 @@ class ChessEnvironment(MCPEnvironment):
         uci_move: str,
         reason: str,
     ) -> str:
-        """Apply two-strike illegal move rule.
+        """Apply two-strike illegal move rule."""
 
-        Strike 1: Record dirty call, apply -0.4 reward penalty, return a
-                  warning so the agent can try again.
-        Strike 2: Finalize the episode as a disqualification.
-        """
-        ILLEGAL_MOVE_PENALTY = -0.4
+        # BUG 8 FIX: Mark the move as 'clean=False' so the format ratio drops.
         self._record_tool_call(
             "make_move",
             threat_analysis, candidate_moves, justification,
-            clean=True, uci_move=uci_move,
+            clean=False, uci_move=uci_move,
         )
         self.illegal_move_count[color] += 1
         self._last_turn_flipped = False
 
+        msg = f"ILLEGAL MOVE (strike {self.illegal_move_count[color]}/{STRIKES_BEFORE_DQ}): {reason} "
         if self.illegal_move_count[color] == 1:
-            self.dirty_penalty_accum[color] += abs(ILLEGAL_MOVE_PENALTY)
-            return (
-                f"ILLEGAL MOVE (strike 1/2): {reason} "
-                f"Penalty applied ({ILLEGAL_MOVE_PENALTY:.1f}). "
-                "You have one more attempt before disqualification. "
-                "Please choose a legal UCI move."
-            )
+            # BUG 8 FIX: Apply the documented -0.05 penalty instead of -0.40.
+            self.dirty_penalty_accum[color] += abs(ILLEGAL_FORMAT_PENALTY)
+            msg += f"Penalty applied (-{abs(ILLEGAL_FORMAT_PENALTY)}). You have one more chance."
+            return msg
         else:
+            msg += "Disqualified."
             self._finalize_episode(result=f"dq_illegal_{color}")
-            return f"DISQUALIFIED (strike 2): {reason}"
-
+            return msg
     def _apply_make_move(
         self,
         threat_analysis: str,
@@ -693,6 +662,12 @@ class ChessEnvironment(MCPEnvironment):
             f"cp_loss={cp_loss} move_score={move_score:.2f}"
         )
 
+    def close(self) -> None:
+        """BUG 7 FIX: Shut down Stockfish on env close to prevent leaks."""
+        if hasattr(self, "_stockfish") and self._stockfish is not None:
+            self._stockfish.close()
+        super().close()
+
     # -----------------------------------------------------------------
     # Format-bucket accounting + structured thought evaluation
     # -----------------------------------------------------------------
@@ -768,32 +743,11 @@ class ChessEnvironment(MCPEnvironment):
         *,
         uci_move: Optional[str] = None,
     ) -> float:
-        """Deterministic heuristic scoring of structured reasoning (max 0.15).
-
-        Three independent sub-scores, each worth 0.05:
-
-        1. Threat Awareness (0.05)
-           - If the board is in check: `threat_analysis` must mention
-             'check' or 'king' to earn the sub-score.
-           - Else if the last move was a capture: must mention a capture
-             synonym (capture / takes / exchange / recapture / trade / material).
-           - Else: awarded by default if `threat_analysis` has > 5 words.
-
-        2. Action Tracing (0.05)
-           - Only scored for `make_move` (where `uci_move` is provided).
-           - The submitted UCI or its destination square (chars 2-4) must
-             appear in `candidate_moves`.
-           - For all other tools: awarded by default if candidate_moves
-             contains at least two entries.
-
-        3. Strategic Justification (0.05)
-           - `justification` (lowercased) must contain at least one keyword
-             from CHESS_CONCEPTS.
-        """
+        """Deterministic heuristic scoring of structured reasoning (max 0.15)."""
+        import re
         score = 0.0
         ta_lower = (threat_analysis or "").lower()
         ju_lower = (justification or "").lower()
-        # Bug 6 fix: str(None) == "None" is truthy — filter by identity not truthiness.
         cm_list = [str(m).strip() for m in (candidate_moves or []) if m is not None and str(m).strip()]
 
         # --- Sub-score 1: Threat Awareness ---
@@ -809,8 +763,8 @@ class ChessEnvironment(MCPEnvironment):
 
         # --- Sub-score 2: Action Tracing ---
         if tool_name == "make_move" and uci_move:
-            dest_sq = uci_move[2:4] if len(uci_move) >= 4 else ""
-            if any(uci_move == m or dest_sq in m for m in cm_list):
+            # BUG 15 FIX: Stop substring cheating. Check for EXACT matches only.
+            if any(uci_move == m for m in cm_list):
                 score += 0.05
         else:
             # For non-make_move tools, require >=2 candidate moves listed.
@@ -818,8 +772,11 @@ class ChessEnvironment(MCPEnvironment):
                 score += 0.05
 
         # --- Sub-score 3: Strategic Justification ---
-        if any(concept in ju_lower for concept in CHESS_CONCEPTS):
-            score += 0.05
+        # BUG 16 FIX: Use regex word boundaries (\b) so "centered" doesn't match "center".
+        for concept in CHESS_CONCEPTS:
+            if re.search(rf"\b{concept}\b", ju_lower):
+                score += 0.05
+                break
 
         return score
 
@@ -839,17 +796,19 @@ class ChessEnvironment(MCPEnvironment):
     # -----------------------------------------------------------------
 
     def _compute_format_score(self, color: str) -> float:
-        """Bucket 2 (Format, max W_FORMAT=0.10): clean-ratio minus ping + dirty penalties."""
         total = self.tool_calls_total[color]
-        clean = self.tool_calls_clean[color]
-        ratio = (clean / total) if total > 0 else 0.0
+        if total == 0:
+            return 0.0
 
-        raw = (
-            W_FORMAT * ratio
-            - self.ping_count[color] * PING_BUCKET_PENALTY
-            - self.dirty_penalty_accum[color]
-        )
-        return max(0.0, min(W_FORMAT, raw))
+        # BUG 8 FIX: Clean ratio drops when clean=False is passed.
+        ratio = self.tool_calls_clean[color] / total
+        base = W_FORMAT * ratio
+
+        # BUG 9 FIX: Clamp the ping penalty so it doesn't nuke the entire score below 0
+        ping_penalty = self.ping_count[color] * PING_BUCKET_PENALTY
+        format_score = max(0.0, base - ping_penalty)
+
+        return format_score
 
     def _compute_thought_quality(self, color: str) -> float:
         """Bucket 3 (Thought Quality, max W_THOUGHT_Q=0.15): avg per-call score."""
@@ -860,11 +819,18 @@ class ChessEnvironment(MCPEnvironment):
         return max(0.0, min(W_THOUGHT_Q, avg))
 
     def _compute_sf_acc(self, color: str) -> float:
-        """Bucket 3: avg(per-move score) * W_SF_ACC - eval-call penalty."""
+        # BUG 19 FIX: Uses self.result, not self._result_tag!
+        if self.result == f"dq_eval_abuse_{color}":
+            return 0.0
+
         scores = self.sf_move_scores[color]
-        avg = (sum(scores) / len(scores)) if scores else 0.0
-        raw = W_SF_ACC * avg - self.eval_calls[color] * EVAL_BUCKET_PENALTY
-        return max(0.0, min(W_SF_ACC, raw))
+        if not scores:
+            return 0.0
+
+        avg_acc = sum(scores) / len(scores)
+        base = avg_acc * W_SF
+        penalty = self.eval_calls[color] * EVAL_BUCKET_PENALTY
+        return max(0.0, base - penalty)
 
     def _finalize_outcome(self, result: str) -> None:
         """Bucket 1: assign outcome by terminal state.

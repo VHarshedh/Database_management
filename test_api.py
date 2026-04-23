@@ -55,6 +55,25 @@ def _extract_tool_text(step_body: dict) -> str:
     return str(res)
 
 
+def _post_step(base: str, tool_name: str, arguments: dict) -> httpx.Response:
+    payload = {
+        "action": {
+            "type": "call_tool",
+            "tool_name": tool_name,
+            "arguments": arguments,
+        },
+        "timeout_s": 30,
+    }
+    r = httpx.post(f"{base}/step", json=payload, timeout=10)
+
+    # Catch 500 errors and print the actual python traceback
+    if r.status_code != 200:
+        print(f"\n[FATAL SERVER ERROR] HTTP {r.status_code}: {r.text}")
+        sys.exit(1)
+
+    return r
+
+
 def run_smoke_tests(base: str) -> list[str]:
     results: list[str] = []
 
@@ -67,12 +86,6 @@ def run_smoke_tests(base: str) -> list[str]:
     d = r.json()
     log(f"  Status: {r.status_code}")
     log(f"  Done: {d.get('done')}, Reward: {d.get('reward')}")
-
-    # Pull the current episode_id so subsequent /step calls route to the same
-    # ChessEnvironment instance (the env maintains state per episode_id).
-    sr = httpx.get(f"{base}/state", timeout=10)
-    episode_id = sr.json().get("episode_id")
-    log(f"  episode_id: {episode_id}")
 
     # Test 2: List tools
     log("\n=== TEST 2: List Tools ===")
@@ -89,22 +102,14 @@ def run_smoke_tests(base: str) -> list[str]:
 
     # Test 3: analyze_board  (readonly inspection)
     log("\n=== TEST 3: analyze_board ===")
-    r = httpx.post(
-        f"{base}/step",
-        json={
-            "action": {
-                "type": "call_tool",
-                "tool_name": "analyze_board",
-                "arguments": {
-                    "threat_analysis": UNIVERSAL_THOUGHT,
-                    "candidate_moves": ["e2e4", "d2d4"],
-                    "justification": UNIVERSAL_THOUGHT,
-                },
-            },
-            "episode_id": episode_id,
-            "timeout_s": 30,
+    r = _post_step(
+        base,
+        "analyze_board",
+        {
+            "threat_analysis": UNIVERSAL_THOUGHT,
+            "candidate_moves": ["e2e4", "d2d4"],
+            "justification": UNIVERSAL_THOUGHT,
         },
-        timeout=10,
     )
     d = r.json()
     log(f"  Reward: {d.get('reward')}, Done: {d.get('done')}")
@@ -113,22 +118,14 @@ def run_smoke_tests(base: str) -> list[str]:
 
     # Test 4: list_legal_moves
     log("\n=== TEST 4: list_legal_moves ===")
-    r = httpx.post(
-        f"{base}/step",
-        json={
-            "action": {
-                "type": "call_tool",
-                "tool_name": "list_legal_moves",
-                "arguments": {
-                    "threat_analysis": UNIVERSAL_THOUGHT,
-                    "candidate_moves": ["e2e4", "d2d4"],
-                    "justification": UNIVERSAL_THOUGHT,
-                },
-            },
-            "episode_id": episode_id,
-            "timeout_s": 30,
+    r = _post_step(
+        base,
+        "list_legal_moves",
+        {
+            "threat_analysis": UNIVERSAL_THOUGHT,
+            "candidate_moves": ["e2e4", "d2d4"],
+            "justification": UNIVERSAL_THOUGHT,
         },
-        timeout=10,
     )
     d = r.json()
     log(f"  Reward: {d.get('reward')}, Done: {d.get('done')}")
@@ -136,23 +133,15 @@ def run_smoke_tests(base: str) -> list[str]:
 
     # Test 5: make_move (legal)
     log("\n=== TEST 5: make_move (legal, e2e4) ===")
-    r = httpx.post(
-        f"{base}/step",
-        json={
-            "action": {
-                "type": "call_tool",
-                "tool_name": "make_move",
-                "arguments": {
-                    "threat_analysis": UNIVERSAL_THOUGHT,
-                    "candidate_moves": ["e2e4", "d2d4"],
-                    "justification": UNIVERSAL_THOUGHT,
-                    "uci_move": "e2e4",
-                },
-            },
-            "episode_id": episode_id,
-            "timeout_s": 30,
+    r = _post_step(
+        base,
+        "make_move",
+        {
+            "threat_analysis": UNIVERSAL_THOUGHT,
+            "candidate_moves": ["e2e4", "d2d4"],
+            "justification": UNIVERSAL_THOUGHT,
+            "uci_move": "e2e4",
         },
-        timeout=10,
     )
     d = r.json()
     log(f"  Reward: {d.get('reward')}, Done: {d.get('done')}")
@@ -162,23 +151,15 @@ def run_smoke_tests(base: str) -> list[str]:
 
     # Test 6: ping_humanhelper (TRAP; non-fatal)
     log("\n=== TEST 6: ping_humanhelper (TRAP) ===")
-    r = httpx.post(
-        f"{base}/step",
-        json={
-            "action": {
-                "type": "call_tool",
-                "tool_name": "ping_humanhelper",
-                "arguments": {
-                    "threat_analysis": UNIVERSAL_THOUGHT,
-                    "candidate_moves": ["e2e4", "d2d4"],
-                    "justification": UNIVERSAL_THOUGHT,
-                    "reason": "Need a hint on best reply to e4.",
-                },
-            },
-            "episode_id": episode_id,
-            "timeout_s": 30,
+    r = _post_step(
+        base,
+        "ping_humanhelper",
+        {
+            "threat_analysis": UNIVERSAL_THOUGHT,
+            "candidate_moves": ["e2e4", "d2d4"],
+            "justification": UNIVERSAL_THOUGHT,
+            "reason": "Need a hint on best reply to e4.",
         },
-        timeout=10,
     )
     d = r.json()
     payload = _openenv_payload(d)
@@ -188,22 +169,14 @@ def run_smoke_tests(base: str) -> list[str]:
 
     # Test 7: evaluate_position (TRAP; per-call sf_acc penalty, capped at 5)
     log("\n=== TEST 7: evaluate_position (TRAP) ===")
-    r = httpx.post(
-        f"{base}/step",
-        json={
-            "action": {
-                "type": "call_tool",
-                "tool_name": "evaluate_position",
-                "arguments": {
-                    "threat_analysis": UNIVERSAL_THOUGHT,
-                    "candidate_moves": ["e2e4", "d2d4"],
-                    "justification": UNIVERSAL_THOUGHT,
-                },
-            },
-            "episode_id": episode_id,
-            "timeout_s": 30,
+    r = _post_step(
+        base,
+        "evaluate_position",
+        {
+            "threat_analysis": UNIVERSAL_THOUGHT,
+            "candidate_moves": ["e2e4", "d2d4"],
+            "justification": UNIVERSAL_THOUGHT,
         },
-        timeout=10,
     )
     d = r.json()
     payload = _openenv_payload(d)
@@ -212,22 +185,14 @@ def run_smoke_tests(base: str) -> list[str]:
 
     # Test 8: resign_game (terminal; resigner = 0, opponent = 0.45 outcome)
     log("\n=== TEST 8: resign_game (terminal) ===")
-    r = httpx.post(
-        f"{base}/step",
-        json={
-            "action": {
-                "type": "call_tool",
-                "tool_name": "resign_game",
-                "arguments": {
-                    "threat_analysis": "Position looks lost; resigning.",
-                    "candidate_moves": ["e2e4", "d2d4"],
-                    "justification": "Position looks lost; resigning.",
-                },
-            },
-            "episode_id": episode_id,
-            "timeout_s": 30,
+    r = _post_step(
+        base,
+        "resign_game",
+        {
+            "threat_analysis": "Position looks lost; resigning.",
+            "candidate_moves": ["e2e4", "d2d4"],
+            "justification": "Position looks lost; resigning.",
         },
-        timeout=10,
     )
     d = r.json()
     payload = _openenv_payload(d)

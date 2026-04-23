@@ -6,6 +6,7 @@
 
 """FastAPI + WebSocket server for the Chess Arena OpenEnv environment."""
 
+import os
 from fastapi import Request
 import json
 
@@ -56,12 +57,26 @@ async def health_check() -> dict:
     return {"status": "healthy"}
 
 
+# --- BUG 3 FIX: OVERRIDE /state TO PREVENT 500 ERRORS ---
+# 1. Remove the broken /state route provided by openenv-core
+for i, route in enumerate(app.routes):
+    if getattr(route, "path", "") == "/state" and "GET" in getattr(route, "methods", []):
+        app.routes.pop(i)
+        break
+
+# 2. Replace it with a safe version that returns the active episode's state
+@app.get("/state")
+async def get_state_override():
+    from server.chess_environment import ChessEnvironment
+    if getattr(ChessEnvironment, "_latest_instance", None) is not None:
+        return ChessEnvironment._latest_instance.state
+    return {"error": "No active episode. Call /reset first."}
+
+
 def main() -> None:
     """Run the server directly via `python -m chess_arena.server.app`."""
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
 
 if __name__ == "__main__":
     main()

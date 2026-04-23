@@ -6,6 +6,7 @@ behaves correctly for every terminal branch.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -68,10 +69,31 @@ class StepResult:
             if isinstance(sc, dict):
                 payload = sc.get("openenv", {})
 
+        # Some responses nest openenv only under extra / data (OpenEnv HTTP paths vary).
+        if not payload and isinstance(res, dict):
+            for key in ("extra", "data"):
+                inner = res.get(key)
+                if isinstance(inner, dict) and "openenv" in inner:
+                    payload = inner.get("openenv") or {}
+                    break
+
         self.payload: dict = payload if isinstance(payload, dict) else {}
         self.final_reward: dict = self.payload.get("final_reward") or {}
         self.bucket: dict = self.payload.get("bucket") or {}
         self.result_tag: str | None = self.payload.get("result")
+
+        # Long tool calls (e.g. 75+ plies) sometimes omit openenv in structured_content
+        # on the wire, but the human-readable tool line still includes the reason:
+        #   "Move e2e4 ended the game: draw_threefold_repetition (cp_loss=...)."
+        if self.result_tag is None and self.text:
+            m = re.search(
+                r"ended the game:\s*([a-z0-9_]+)",
+                self.text,
+                flags=re.IGNORECASE,
+            )
+            if m:
+                self.result_tag = m.group(1)
+
         self.turn: str | None = self.payload.get("turn")
 
 
@@ -134,6 +156,7 @@ def step(episode_id: str, tool: str, **arguments) -> StepResult:
 # ─── Scenarios ──────────────────────────────────────────────────────────────
 
 def scenario_1_clean_opening() -> tuple:
+    """Clean opening: non-terminal after standard development plies."""
     episode_id = reset_env()
     step(episode_id, "analyze_board", thought=UNIVERSAL_THOUGHT)
     step(episode_id, "list_legal_moves", thought=UNIVERSAL_THOUGHT)
@@ -147,6 +170,7 @@ def scenario_1_clean_opening() -> tuple:
 
 
 def scenario_2_fools_mate() -> tuple:
+    """Fool's mate sequence ending in black checkmate."""
     episode_id = reset_env()
     step(episode_id, "make_move", thought=UNIVERSAL_THOUGHT, uci_move="f2f3")
     step(episode_id, "make_move", thought=UNIVERSAL_THOUGHT, uci_move="e7e5")
@@ -180,6 +204,7 @@ def scenario_3_illegal_dq() -> tuple:
 
 
 def scenario_4_eval_abuse_dq() -> tuple:
+    """Repeated evaluate_position usage triggers eval-abuse DQ."""
     episode_id = reset_env()
     last: StepResult | None = None
     for _ in range(6):
@@ -197,6 +222,7 @@ def scenario_4_eval_abuse_dq() -> tuple:
 
 
 def scenario_5_resign() -> tuple:
+    """Black resignation path terminates and scores correctly."""
     episode_id = reset_env()
     step(episode_id, "make_move", thought=UNIVERSAL_THOUGHT, uci_move="e2e4")
     sr = step(episode_id, "resign_game", thought="Position is already lost.")
@@ -210,6 +236,7 @@ def scenario_5_resign() -> tuple:
 
 
 def scenario_6_ping_is_nonfatal() -> tuple:
+    """ping_humanhelper is non-terminal and play can continue."""
     episode_id = reset_env()
     sr = step(
         episode_id,
@@ -226,6 +253,7 @@ def scenario_6_ping_is_nonfatal() -> tuple:
 
 
 def scenario_7_black_resignation_win() -> tuple:
+    """Long line where white resigns and black gets win outcome."""
     THOUGHT = UNIVERSAL_THOUGHT
     moves_white = ["e2e4", "g1f3", "d2d4", "f3d4", "b1c3", "f1c4", "c1d2", "f2f3", "f3e4", "d1f3", "h1f1"]
     moves_black = ["c7c5", "d7d6", "c5d4", "g8f6", "g7g6", "f8g7", "e8g8", "f6e4", "g7d4", "b8c6", "c6e5"]
@@ -253,38 +281,66 @@ def scenario_7_black_resignation_win() -> tuple:
 
 
 def scenario_8_draw_by_repetition() -> tuple:
+    """Threefold repetition should terminate as a draw outcome."""
     THOUGHT_W = "Repeating to claim a draw."
     THOUGHT_B = "Playing solid defence. The draw is fair."
 
-    # Fully restored valid 4-character UCI strings
+    # UCI from the canonical PGN (75 half-moves: 37 full moves + 1 final white Kd3).
     moves = [
-        ("e2e4", "c7c5"), ("g1f3", "d7d6"), ("d2d4", "c5d4"),
-        ("f3d4", "g8f6"), ("b1c3", "g7g6"), ("c1e3", "f8g7"),
-        ("f2f3", "e8g8"), ("f1c4", "b8c6"), ("d1d2", "c6d4"),
-        ("e3d4", "c8e6"), ("d4e6", "f7e6"), ("e1c1", "d8a5"),
-        ("h2h4", "a8c8"), ("c1b1", "f6h5"), ("d4g7", "g8g7"),
-        ("c3e2", "a5d2"), ("d1d2", "e6e5"), ("b2b3", "h5f4"),
-        ("e2f4", "e5f4"), ("h1d1", "c8c5"), ("d2d5", "f8c8"),
-        ("c2c4", "g7f6"), ("b1b2", "a7a5"), ("d5c5", "c8c5"),
-        ("d1d5", "c5d5"), ("e4d5", "g6g5"), ("b2c3", "f6f5"),
-        ("c3d4", "g5g4"), ("a2a3", "b7b6"), ("b3b4", "a5b4"),
-        ("a3b4", "h7h6"), ("d4d3", "g4f3"), ("g2f3", "f5e5"),
-        ("b4b5", "e5f5"), ("d3c3", "f5e5"), ("c3d3", "e5f5"),
+        ("e2e4", "c7c5"),
+        ("g1f3", "d7d6"),
+        ("d2d4", "c5d4"),
+        ("f3d4", "g8f6"),
+        ("b1c3", "g7g6"),
+        ("c1e3", "f8g7"),
+        ("f2f3", "e8g8"),
+        ("f1c4", "b8c6"),
+        ("d1d2", "c6d4"),
+        ("e3d4", "c8e6"),
+        ("c4e6", "f7e6"),
+        ("e1c1", "d8a5"),
+        ("h2h4", "a8c8"),
+        ("c1b1", "f6h5"),
+        ("d4g7", "g8g7"),
+        ("c3e2", "a5d2"),
+        ("d1d2", "e6e5"),
+        ("b2b3", "h5f4"),
+        ("e2f4", "e5f4"),
+        ("h1d1", "c8c5"),
+        ("d2d5", "f8c8"),
+        ("c2c4", "g7f6"),
+        ("b1b2", "a7a5"),
+        ("d5c5", "c8c5"),
+        ("d1d5", "c5d5"),
+        ("e4d5", "g6g5"),
+        ("b2c3", "f6f5"),
+        ("c3d4", "g5g4"),
+        ("a2a3", "b7b6"),
+        ("b3b4", "a5b4"),
+        ("a3b4", "h7h6"),
+        ("d4d3", "g4f3"),
+        ("g2f3", "f5e5"),
+        ("b4b5", "e5f5"),
+        ("d3c3", "f5e5"),
+        ("c3d3", "e5f5"),
         ("d3c3", "f5e5"),
     ]
+    # PGN 38. Kd3 — last half-move, white to claim draw.
+    _FINAL_KD3 = "c3d3"
 
     episode_id = reset_env()
     last = None
     for w_uci, b_uci in moves:
         last = step(episode_id, "make_move", thought=THOUGHT_W, uci_move=w_uci)
-        if last.done: break
+        if last.done:
+            break
         last = step(episode_id, "make_move", thought=THOUGHT_B, uci_move=b_uci)
-        if last.done: break
+        if last.done:
+            break
 
     sr = last
-    # Only make the final step if the game didn't naturally terminate during the loop
     if sr is not None and not sr.done:
-        sr = step(episode_id, "make_move", thought=THOUGHT_W, uci_move="c3d3")
+        sr = step(episode_id, "make_move", thought=THOUGHT_W, uci_move=_FINAL_KD3)
 
     assert sr.done, "Threefold repetition should terminate the episode."
     result_lower = (sr.result_tag or "").lower()
@@ -296,34 +352,67 @@ def scenario_8_draw_by_repetition() -> tuple:
 
 
 def scenario_9_white_wins_french_resign() -> tuple:
+    """French-like line culminating in black resignation to white."""
     THOUGHT_W = "Advancing methodically."
     THOUGHT_B = "Lost position."
 
-    # Fully restored valid 4-character UCI strings
+    # UCI from the canonical PGN (79 half-moves: 39 full moves + 1 final white Rb6).
     moves = [
-        ("e2e4", "e7e6"), ("d2d4", "d7d5"), ("e4e5", "c7c5"), ("c2c3", "d8b6"),
-        ("g1f3", "c8d7"), ("a2a3", "a7a5"), ("f1e2", "d7b5"), ("e1g1", "b5e2"),
-        ("d1e2", "c5c4"), ("a3a4", "b8d7"), ("b1d2", "b6c6"), ("f1e1", "d7b6"),
-        ("e2d1", "g8e7"), ("b2b3", "c4b3"), ("d1b3", "b6c4"), ("a1b1", "a8b8"),
-        ("b3b5", "c6b5"), ("b1b5", "b7b6"), ("d2c4", "d5c4"), ("f3d2", "e7d5"),
-        ("c1b2", "b8c8"), ("d2e4", "f8e7"), ("e1a1", "e8g8"), ("b2a3", "e7a3"),
-        ("a1a3", "c8c6"), ("g2g3", "f7f5"), ("e4d6", "f5f4"), ("g1g2", "f4f3"),
-        ("g2h3", "h7h5"), ("h3h4", "g6g5"), ("h4g5", "g8g7"), ("d6e4", "c6f6"),
-        ("g5h4", "g7h6"), ("h4g4", "f6f4"), ("g3f4", "h5h4"), ("f4g5", "a5a4"),
-        ("b5d5", "e6d5"), ("g5f4", "c8c6"), ("f4g5", "h6g7"),
+        ("e2e4", "e7e6"),
+        ("d2d4", "d7d5"),
+        ("e4e5", "c7c5"),
+        ("c2c3", "d8b6"),
+        ("g1f3", "c8d7"),
+        ("a2a3", "a7a5"),
+        ("f1e2", "d7b5"),
+        ("e1g1", "b5e2"),
+        ("d1e2", "c5c4"),
+        ("a3a4", "b8d7"),
+        ("b1d2", "b6c6"),
+        ("f1e1", "d7b6"),
+        ("e2d1", "g8e7"),
+        ("b2b3", "c4b3"),
+        ("d1b3", "b6c4"),
+        ("a1b1", "a8b8"),
+        ("b3b5", "c6b5"),
+        ("b1b5", "c4d2"),
+        ("c1d2", "e7c6"),
+        ("e1b1", "f8a3"),
+        ("b5b7", "b8b7"),
+        ("b1b7", "e8g8"),
+        ("g1f1", "h7h6"),
+        ("f1e2", "f8c8"),
+        ("f3e1", "g8f8"),
+        ("e1d3", "g7g5"),
+        ("h2h4", "a3e7"),
+        ("h4h5", "c6d8"),
+        ("b7b5", "d8c6"),
+        ("f2f3", "c8c7"),
+        ("d3f2", "f8g7"),
+        ("f2g4", "c6a7"),
+        ("b5a5", "a7c6"),
+        ("a5a8", "c7b7"),
+        ("e2d3", "b7b1"),
+        ("a8a6", "c6d8"),
+        ("d3c2", "b1g1"),
+        ("g4e3", "g1h1"),
+        ("g2g4", "h1h2"),
     ]
+    _FINAL_RB6 = "a6b6"
 
     episode_id = reset_env()
     last = None
     for w_uci, b_uci in moves:
         last = step(episode_id, "make_move", thought=THOUGHT_W, uci_move=w_uci)
-        if last.done: break
+        if last.done:
+            break
         last = step(episode_id, "make_move", thought=THOUGHT_B, uci_move=b_uci)
-        if last.done: break
+        if last.done:
+            break
 
     sr = last
     if sr is not None and not sr.done:
-        last = step(episode_id, "make_move", thought=THOUGHT_W, uci_move="b5b6")
+        last = step(episode_id, "make_move", thought=THOUGHT_W, uci_move=_FINAL_RB6)
         if not last.done:
             sr = step(episode_id, "resign_game", thought="The endgame is completely lost.")
         else:
