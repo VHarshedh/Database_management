@@ -104,101 +104,62 @@ def log_info(msg: str) -> None:
 # SYSTEM_PROMPT (strict: every action must be a single JSON tool call)
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are an expert chess-playing agent in a multi-agent arena.
-You control ONE side of the board. The environment tracks whose turn it is and
-will route your outputs to the correct color. Play to win.
+SYSTEM_PROMPT = """You are a Grandmaster-level chess agent competing in a multi-agent reinforcement learning arena.
+You control ONE side of the board. Play to win.
 
-Respond ONLY with a single JSON object. NO prose, NO markdown, NO code fences.
-
-═══════════════════════════════════════════════════
- MANDATORY STRUCTURED REASONING SCHEMA
-═══════════════════════════════════════════════════
-EVERY tool call — without exception — must include these three fields:
-
-  "threat_analysis"  (string)
-      Evaluate the CURRENT board state: immediate dangers, checks, captures
-      pending, or tactical motifs. Must be specific to the position.
-
-  "candidate_moves"  (array of 2–3 UCI strings)
-      The concrete moves you evaluated before committing. Format: ["e2e4",
-      "d2d4", "g1f3"]. For make_move, the executed move MUST appear here.
-
-  "justification"    (string)
-      Your strategic reason for choosing THIS action. Must reference at least
-      one chess concept: center, develop, pin, fork, defend, attack, threat,
-      king safety, control, space, initiative, or structure.
-
-JSON schema (use for EVERY call):
-{
-  "tool": "<tool_name>",
-  "arguments": {
-    "threat_analysis": "<specific board evaluation>",
-    "candidate_moves": ["<uci1>", "<uci2>"],
-    "justification":  "<strategic reason referencing chess concepts>",
-    ... (tool-specific args like uci_move)
-  }
-}
-
-EXAMPLE — a make_move call:
-{
-  "tool": "make_move",
-  "arguments": {
-    "threat_analysis": "No immediate checks. Opponent's bishop on c4 eyes f7; king is safe.",
-    "candidate_moves": ["e2e4", "d2d4", "g1f3"],
-    "justification": "Playing e2e4 claims center space and opens lines for bishop and queen development.",
-    "uci_move": "e2e4"
-  }
-}
+Respond using the provided tools. Every tool call MUST include the mandatory reasoning fields.
+Do NOT output conversational text or markdown blocks.
 
 ═══════════════════════════════════════════════════
- REWARD BUCKETS (know what you are scored on)
+ MANDATORY REASONING SCHEMA
 ═══════════════════════════════════════════════════
-  Outcome       (max 0.50) — win / draw / loss result
-  Format        (max 0.10) — schema compliance; PENALIZED if any of the
-                             three required fields is missing or empty:
-                             -0.05 per dirty call (W_FORMAT penalty)
-  Thought Qual. (max 0.15) — deterministic heuristic scoring:
-                             +0.05 Threat Awareness (board context)
-                             +0.05 Action Tracing   (uci_move in candidate_moves)
-                             +0.05 Strategic Justif.(chess concept keyword)
-  SF Accuracy   (max 0.24) — Stockfish centipawn closeness per move
+Every tool call — without exception — must include these three fields in your arguments:
 
-Failing to include all three schema fields = W_FORMAT penalty + rejected logic.
+1. "threat_analysis" (string)
+   Evaluate the current board state. Check for immediate dangers, king safety, checks, and pending captures.
+
+2. "candidate_moves" (array of strings)
+   List at least 2 concrete UCI moves you evaluated before committing. 
+   UCI format MUST include start and end squares: e.g., ["e2e4", "g1f3"].
+   Do NOT use short notation like ["e4", "Nf3"].
+
+3. "justification" (string)
+   Your strategic reasoning referencing chess concepts.
+
+═══════════════════════════════════════════════════
+ UCI MOVE FORMAT (STRICT REQUIREMENT)
+═══════════════════════════════════════════════════
+You MUST use the UCI (Universal Chess Interface) format for all moves.
+A valid UCI move is exactly 4 or 5 characters: [source_square][destination_square][promotion].
+- Correct: "e2e4", "g7g6", "b8c6", "e7e8q"
+- Incorrect: "e4", "g6", "Nc6", "O-O"
 
 ═══════════════════════════════════════════════════
  TOOLS
 ═══════════════════════════════════════════════════
 - `analyze_board(threat_analysis, candidate_moves, justification)`
-    Returns current FEN, side to move, and check status.
+   Returns the current FEN, side to move, and check status.
 
 - `list_legal_moves(threat_analysis, candidate_moves, justification)`
-    Returns the full list of legal UCI moves.
+   Returns all legal UCI moves available in the current position.
 
 - `make_move(threat_analysis, candidate_moves, justification, uci_move)`
-    Submits a move. uci_move MUST appear in candidate_moves.
-    Illegal move ENDS the game with disqualification.
+   Submits your chosen move. uci_move must be in UCI format (e.g., "e2e4").
 
 - `resign_game(threat_analysis, candidate_moves, justification)`
-    Resigns. Only use when losing is certain.
+   Resigns the game on your behalf.
 
-- `evaluate_position(threat_analysis, candidate_moves, justification)` *** TRAP ***
-    Returns Stockfish eval. Each call docks SF-accuracy by -0.04.
-    6th call on your side DISQUALIFIES you.
+- `evaluate_position(threat_analysis, candidate_moves, justification)`
+   Returns a Stockfish centipawn evaluation of the current position.
 
-- `ping_humanhelper(threat_analysis, candidate_moves, justification, reason)` *** TRAP ***
-    Always returns "Human helper is currently unavailable."
-    Each call docks your Format bucket by -0.03.
+- `ping_humanhelper(threat_analysis, candidate_moves, justification, reason)`
+   Contacts a human observer for assistance.
 
-STRATEGY:
-1. First turn: `analyze_board` to confirm state.
-2. Before every move: `list_legal_moves` to know what is playable.
-3. Pick the best move with `make_move`. Avoid `evaluate_position` — the
-   penalty is non-trivial.
-4. Never call `ping_humanhelper`.
-5. Always populate all three reasoning fields; empty fields = penalty.
-
-IMPORTANT: You must use the provided tools to interact with the chess board. Do not explain your reasoning in plain text before calling a tool. Only output the tool call.
-Strictly follow the JSON schema. Your tool call arguments must not be nested. Do not include a 'tool' or 'arguments' key inside the arguments object itself.
+═══════════════════════════════════════════════════
+ OUTPUT FORMAT
+═══════════════════════════════════════════════════
+Each response must be a single flat JSON object. Do not nest arguments inside an "arguments" key.
+All three reasoning fields must be present and non-empty in every call.
 """
 
 
@@ -388,46 +349,82 @@ The tool-call dict must have:
 """
 
 
+def clean_llm_json(raw_text: str) -> dict:
+    """Strips markdown fences and conversational filler to find the first valid JSON object."""
+    if not isinstance(raw_text, str):
+        raise ValueError("Input must be a string")
+        
+    # 1. Remove markdown blocks
+    text = re.sub(r"```json\n?", "", raw_text)
+    text = re.sub(r"```\n?", "", text).strip()
+    
+    # 2. Try to find the first balanced JSON object
+    candidate = _first_json_object(text)
+    if candidate:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+    # 3. Fallback: Extract everything between the first '{' and the last '}'
+    start = text.find('{')
+    end = text.rfind('}') + 1
+    
+    if start == -1 or end == 0:
+        raise ValueError(f"No JSON object found in LLM output: {raw_text[:100]}...")
+        
+    return json.loads(text[start:end])
+
+
 def _extract_first_tool_call(raw_text: str) -> Optional[dict[str, Any]]:
     """Parse the model's raw text output into {tool, arguments}.
 
     The SYSTEM_PROMPT demands a single JSON object, but models occasionally
-    leak markdown fences or prose. We try two fast paths:
-      1. Direct json.loads on the stripped text.
-      2. Regex-extract the first {...} block.
+    leak markdown fences or prose. We use the robust `clean_llm_json` helper.
 
-    Structured reasoning fields (threat_analysis, candidate_moves, justification)
-    are promoted from the top level into `arguments` if the model placed them
-    at the root rather than nested under `arguments`.
+    Structured reasoning fields and specific tool arguments are promoted 
+    from the top level into `arguments` if the model placed them at the root.
     """
     if not isinstance(raw_text, str):
         return None
-    text = raw_text.strip()
-    # Strip ```json fences if present.
-    if text.startswith("```"):
-        text = re.sub(r"^```[a-zA-Z]*\s*", "", text).rstrip("`").strip()
-    for candidate in (text, _first_json_object(text) or ""):
+
+    try:
+        obj = clean_llm_json(raw_text)
+    except Exception:
+        # Fallback to the old regex-based extraction if clean_llm_json fails
+        # (though clean_llm_json is generally more aggressive).
+        candidate = _first_json_object(raw_text)
         if not candidate:
-            continue
+            return None
         try:
             obj = json.loads(candidate)
         except Exception:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        tool = obj.get("tool")
-        args = obj.get("arguments") or {}
-        if isinstance(tool, str) and isinstance(args, dict):
-            # Promote structured reasoning fields if the model placed them at
-            # the top level instead of inside `arguments`.
-            for field in ("threat_analysis", "candidate_moves", "justification"):
-                if field not in args and field in obj:
-                    args[field] = obj[field]
-            # Legacy: also promote `thought` if present (backwards compat).
-            if "thought" not in args and "thought" in obj:
-                args["thought"] = obj["thought"]
-            return {"tool": tool, "arguments": args, "raw": raw_text}
-    return None
+            return None
+
+    if not isinstance(obj, dict):
+        return None
+
+    tool = obj.get("tool")
+    args = obj.get("arguments") or {}
+    if not isinstance(args, dict):
+        args = {}
+
+    # Promote ALL fields from the root level into `arguments` if they
+    # are missing from the `arguments` dict. This handles models that
+    # follow the "do not nest" instruction literally.
+    for k, v in obj.items():
+        if k not in ("tool", "arguments") and k not in args:
+            args[k] = v
+
+    # Guess tool name from context if missing
+    if not tool:
+        if "uci_move" in args:
+            tool = "make_move"
+        elif any(f in args for f in ("threat_analysis", "candidate_moves", "justification")):
+            # If it has reasoning fields but no uci_move, it's likely a board state request.
+            tool = "analyze_board"
+
+    return {"tool": tool, "arguments": args, "raw": raw_text}
 
 
 def _first_json_object(text: str) -> Optional[str]:
@@ -527,14 +524,10 @@ def make_openai_policy(
         last_err: Optional[str] = None
         sleep_s = base_rate_limit_sleep
 
-        # Google/Gemini models prefer 'auto' for function calling, while
-        # open-source models (Llama, etc) often need 'required' to enforce it.
-        if "gpt-oss" in model_name.lower():
-            dynamic_tool_choice = {"type": "function", "function": {"name": "analyze_board"}} if len(messages) <= 2 else "auto"
-            dynamic_temp = 1.0
-        else:
-            dynamic_tool_choice = "auto" if any(x in model_name.lower() for x in ("gemini", "google")) else "required"
-            dynamic_temp = temperature
+        # Force tool_choice="required" for all models to ensure they use the
+        # structured API mechanism rather than outputting raw JSON text.
+        dynamic_tool_choice = "required"
+        dynamic_temp = temperature
 
         # Bug 3 fix: separate hard-failure counter from transient server errors.
         # A 429/503 rate-limit MUST NOT consume a hard-fail slot — the model is
@@ -549,6 +542,9 @@ def make_openai_policy(
 
         while hard_fails < MAX_HARD_FAILS and rate_retries < MAX_RATE_RETRIES:
             attempt += 1
+            # Vary temperature on each retry (3b): identical prompts otherwise yield identical
+            # truncations; scale up with hard_fails, capped at 1.0.
+            attempt_temperature = dynamic_temp + (hard_fails * 0.15)
             try:
                 pruned_msgs = prune_messages(messages, max_tail_messages=80)
                 completion = client.chat.completions.create(
@@ -556,7 +552,8 @@ def make_openai_policy(
                     messages=pruned_msgs,
                     tools=OPENAI_TOOLS,
                     tool_choice=dynamic_tool_choice,
-                    temperature=dynamic_temp,
+                    temperature=min(attempt_temperature, 1.0),
+                    max_tokens=2048,
                     timeout=call_timeout,
                 )
                 msg = completion.choices[0].message
@@ -593,29 +590,62 @@ def make_openai_policy(
                                 pass
 
                         if not failed_gen:
-                            m_err = re.search(r"'failed_generation':\s*(['\"])(.*?)\1(?:[,\}])", last_err, re.DOTALL)
+                            m_err = re.search(
+                                r"'failed_generation':\s*(['\"])(.*?)\1(?:[,\}])", last_err, re.DOTALL
+                            )
                             if m_err:
                                 failed_gen = m_err.group(2).replace("\\n", "\n").replace('\\"', '"')
 
                         if failed_gen:
-                            m_xml = re.search(r"<function=([a-zA-Z0-9_]+)(.*?)(?:</function>|>)", failed_gen, re.DOTALL)
+                            # Try XML-style tag extraction first
+                            m_xml = re.search(
+                                r"<function=([a-zA-Z0-9_]+)(.*?)(?:</function>|>)", failed_gen, re.DOTALL
+                            )
                             if m_xml:
                                 tool_name_xml = m_xml.group(1)
                                 json_str = m_xml.group(2).strip()
                                 if not json_str.startswith("{"):
                                     json_str = "{" + json_str
-                                raw_dict = json.loads(json_str)
-                                args = raw_dict.get("arguments", raw_dict) if isinstance(raw_dict.get("arguments"), dict) else raw_dict
-                                for field in ("threat_analysis", "candidate_moves", "justification"):
-                                    if field not in args and field in raw_dict:
-                                        args[field] = raw_dict[field]
-                                return {"tool": tool_name_xml, "arguments": args, "raw": failed_gen}
+                                try:
+                                    raw_dict = json.loads(json_str)
+                                    args = (
+                                        raw_dict.get("arguments", raw_dict)
+                                        if isinstance(raw_dict.get("arguments"), dict)
+                                        else raw_dict
+                                    )
+                                    # Field promotion
+                                    for field in ("threat_analysis", "candidate_moves", "justification"):
+                                        if field not in args and field in raw_dict:
+                                            args[field] = raw_dict[field]
+                                    return {
+                                        "tool": tool_name_xml,
+                                        "arguments": args,
+                                        "raw": failed_gen,
+                                    }
+                                except Exception:
+                                    pass
 
+                            # Fallback: look for ANY JSON object in failed_gen
                             parsed = _extract_first_tool_call(failed_gen)
                             if parsed:
+                                # Guess tool name from context if missing
+                                if not parsed.get("tool"):
+                                    if "uci_move" in parsed.get("arguments", {}):
+                                        parsed["tool"] = "make_move"
+                                    else:
+                                        parsed["tool"] = "analyze_board"
                                 return parsed
                     except Exception:
                         pass
+                    # Recovery failed (truncated/invalid) — count as a hard fail so the loop
+                    # does not spin forever on the same error without incrementing hard_fails.
+                    snippet = failed_gen.strip().replace("\n", " ")[:120]
+                    log_info(
+                        f"   ❌ [{model_name}] tool_use_failed recovery failed on attempt {attempt}. "
+                        f"Content: {snippet}..."
+                    )
+                    hard_fails += 1
+                    break
 
                 # Detect timeout errors (openai.APITimeoutError or httpx timeout)
                 is_timeout = (
@@ -820,10 +850,15 @@ def run_episode(
 
         result = EpisodeResult(game_idx=game_idx)
         turn = "white"
+        failed_calls_count = 0
+        actual_ply = 1
+        total_steps = 0
+        max_steps = max_plies * 3  # Safety limit: allow 3 actions per ply on average
 
-        for ply in range(1, max_plies + 1):
+        while actual_ply <= max_plies and total_steps < max_steps:
+            total_steps += 1
             current_model = model_names[turn]
-            log_info(f"\n   --- Ply {ply} ({turn} - {current_model}) ---")
+            log_info(f"\n   --- Ply {actual_ply} (step {total_steps}, {turn} - {current_model}) ---")
             
             policy = policies[turn]
             out = policy(buffers[turn])
@@ -837,13 +872,8 @@ def run_episode(
             args.setdefault("candidate_moves", [])
             args.setdefault("justification", "")
 
-            # Malformed output → POST an intentional no-op action so the env
-            # can record the dirty call. We use `ping_humanhelper` as a
-            # placeholder only if the model emitted nothing usable; otherwise
-            # we route the raw tool choice through.
             if not tool:
-                # Invalid JSON / no tool: charge tool_acc, feed the error back,
-                # and continue to the next ply (same color keeps trying).
+                # Invalid JSON / no tool: charge tool_acc, feed the error back.
                 buffers[turn].append(
                     {
                         "role": "assistant",
@@ -862,8 +892,7 @@ def run_episode(
                     }
                 )
                 # Force the environment to penalize the format bucket by sending
-                # an intentionally malformed analyze_board call (missing the
-                # required schema fields).
+                # an intentionally malformed analyze_board call.
                 step_payload = {
                     "action": {
                         "type": "call_tool",
@@ -883,7 +912,7 @@ def run_episode(
                     pass
                 result.steps.append(
                     {
-                        "ply": ply,
+                        "ply": actual_ply,
                         "color": turn,
                         "tool_name": "(malformed)",
                         "arguments": {},
@@ -893,166 +922,191 @@ def run_episode(
                     }
                 )
                 result.rewards_history[turn].append(_PHASE2_MIN)
-                _emit_step(ply, turn, "invalid_json()", _PHASE2_MIN, False, "invalid_json")
-                continue
-
-            # Post the tool call to the env.
-            step_payload = {
-                "action": {"tool_name": tool, "arguments": args},
-            }
-            if episode_id:
-                step_payload["episode_id"] = episode_id
-
-            step_resp = client.post(f"{env_url}/step", json=step_payload, timeout=60.0)
-            step_resp.raise_for_status()
-            step_body = step_resp.json()
-
-            obs = step_body.get("observation") or {}
-            # Metadata is stripped over HTTP by `serialize_observation`, so our
-            # env also mirrors the debug payload into
-            # ``observation.result.structured_content.openenv``. Read from
-            # whichever one is populated.
-            metadata = obs.get("metadata") or {}
-            res_obj = obs.get("result")
-            openenv_payload: dict[str, Any] = {}
-            if isinstance(res_obj, dict):
-                sc = res_obj.get("structured_content")
-                if isinstance(sc, dict):
-                    maybe = sc.get("openenv")
-                    if isinstance(maybe, dict):
-                        openenv_payload = maybe
-            # Merge: explicit metadata wins; fall back to the HTTP-safe payload.
-            for k, v in openenv_payload.items():
-                metadata.setdefault(k, v)
-
-            done = bool(step_body.get("done") or obs.get("done") or metadata.get("done"))
-            reward = _clamp_phase2(step_body.get("reward") or obs.get("reward"))
-            fen_after = metadata.get("fen", "")
-
-            # Build a tool-output string to feed back to the model. Prefer
-            # the concise ``data`` / ``structured_content.result`` fields that
-            # FastMCP emits over dumping the whole result dict (which would
-            # also expose our hidden ``openenv`` debug payload to the policy).
-            is_error = "error" in obs and isinstance(obs["error"], dict)
-            if is_error:
-                err = obs["error"]
-                tool_out = f"Error ({err.get('error_type')}): {err.get('message')}"
-            elif isinstance(res_obj, dict):
-                sc = res_obj.get("structured_content") or {}
-                if isinstance(sc, dict) and "result" in sc:
-                    tool_out = str(sc["result"])
-                elif "data" in res_obj:
-                    tool_out = str(res_obj["data"])
-                else:
-                    content = res_obj.get("content")
-                    if isinstance(content, list) and content:
-                        first = content[0]
-                        if isinstance(first, dict) and "text" in first:
-                            tool_out = str(first["text"])
-                        else:
-                            tool_out = str(first)
-                    else:
-                        tool_out = "(ok)"
+                _emit_step(actual_ply, turn, "invalid_json()", _PHASE2_MIN, False, "invalid_json")
+                
+                # Track failures
+                failed_calls_count += 1
+                if failed_calls_count >= 5:
+                    log_info(f"   ❌ Model {turn} consistently failed to produce valid JSON. Ending game.")
+                    
+                    # Technical DQ: Tell the environment to finalize the game and reward the opponent.
+                    try:
+                        fin_resp = client.post(
+                            f"{env_url}/finalize", 
+                            json={"episode_id": episode_id, "reason": f"dq_stuck_{turn}"},
+                            timeout=10.0
+                        )
+                        if fin_resp.status_code == 200:
+                            metadata = fin_resp.json()
+                            final_map = metadata.get("final_reward") or {}
+                            result.final_reward = {
+                                "white": _clamp_phase2(final_map.get("white", _PHASE2_MIN)),
+                                "black": _clamp_phase2(final_map.get("black", _PHASE2_MIN)),
+                            }
+                            result.bucket = metadata.get("bucket") or {}
+                            result.result = metadata.get("result")
+                            result.done = True
+                            result.plies = actual_ply
+                            break
+                    except Exception:
+                        pass
+                    
+                    done = True
+                    result.done = True
+                    result.result = f"stuck_{turn}"
+                    break
             else:
-                tool_out = str(res_obj if res_obj is not None else "(ok)")
+                # Reset failure counter on any valid tool call
+                failed_calls_count = 0
 
-            log_info(f"   🔧 Tool: {tool}({json.dumps(args)})")
-            log_info(f"   📋 Result: {tool_out[:100]}...")
-            log_info(f"   💰 Reward: {round(reward, 2)}")
-
-            buffers[turn].append({"role": "assistant", "content": raw or json.dumps(out)})
-            buffers[turn].append(
-                {
-                    "role": "user",
-                    "content": f"[{tool} result]\n{tool_out}",
+                # Post the tool call to the env.
+                step_payload = {
+                    "action": {"tool_name": tool, "arguments": args},
                 }
-            )
+                if episode_id:
+                    step_payload["episode_id"] = episode_id
 
-            # Keep the opponent roughly aware that a move was played. For
-            # `make_move`, append the public UCI so the opponent can plan.
-            if tool == "make_move":
-                is_strike_one = (
-                    isinstance(tool_out, str)
-                    and "ILLEGAL MOVE (strike 1/2)" in tool_out
+                step_resp = client.post(f"{env_url}/step", json=step_payload, timeout=60.0)
+                step_resp.raise_for_status()
+                step_body = step_resp.json()
+
+                obs = step_body.get("observation") or {}
+                metadata = obs.get("metadata") or {}
+                res_obj = obs.get("result")
+                openenv_payload: dict[str, Any] = {}
+                if isinstance(res_obj, dict):
+                    sc = res_obj.get("structured_content")
+                    if isinstance(sc, dict):
+                        maybe = sc.get("openenv")
+                        if isinstance(maybe, dict):
+                            openenv_payload = maybe
+                for k, v in openenv_payload.items():
+                    metadata.setdefault(k, v)
+
+                done = bool(step_body.get("done") or obs.get("done") or metadata.get("done"))
+                reward = _clamp_phase2(step_body.get("reward") or obs.get("reward"))
+                fen_after = metadata.get("fen", "")
+
+                is_error = "error" in obs and isinstance(obs["error"], dict)
+                if is_error:
+                    err = obs["error"]
+                    tool_out = f"Error ({err.get('error_type')}): {err.get('message')}"
+                elif isinstance(res_obj, dict):
+                    sc = res_obj.get("structured_content") or {}
+                    if isinstance(sc, dict) and "result" in sc:
+                        tool_out = str(sc["result"])
+                    elif "data" in res_obj:
+                        tool_out = str(res_obj["data"])
+                    else:
+                        content = res_obj.get("content")
+                        if isinstance(content, list) and content:
+                            first = content[0]
+                            if isinstance(first, dict) and "text" in first:
+                                tool_out = str(first["text"])
+                            else:
+                                tool_out = str(first)
+                        else:
+                            tool_out = "(ok)"
+                else:
+                    tool_out = str(res_obj if res_obj is not None else "(ok)")
+
+                log_info(f"   🔧 Tool: {tool}({json.dumps(args)})")
+                log_info(f"   📋 Result: {tool_out[:100]}...")
+                log_info(f"   💰 Reward: {round(reward, 2)}")
+
+                buffers[turn].append({"role": "assistant", "content": raw or json.dumps(out)})
+                buffers[turn].append(
+                    {
+                        "role": "user",
+                        "content": f"[{tool} result]\n{tool_out}",
+                    }
                 )
 
-                if not is_strike_one and not is_error:
-                    fen = metadata.get("fen") or fen_after
-                    result.move_history.append({
+                move_successful = False
+                if tool == "make_move":
+                    is_strike_one = (
+                        isinstance(tool_out, str)
+                        and "ILLEGAL MOVE (strike 1/2)" in tool_out
+                    )
+
+                    if not is_strike_one and not is_error:
+                        move_successful = True
+                        fen = metadata.get("fen") or fen_after
+                        result.move_history.append({
+                            "color": turn,
+                            "uci": args.get("uci_move", ""),
+                            "cp_loss": _parse_result_field(tool_out, "cp_loss", 0),
+                            "move_score": _parse_result_field(tool_out, "move_score", 0.0),
+                        })
+
+                        if fen:
+                            try:
+                                import chess as _chess
+                                board_str = str(_chess.Board(fen))
+                                indented_board = "\n".join("      " + line for line in board_str.splitlines())
+                                log_info(f"   --- Board after ply {actual_ply} ({args.get('uci_move', '?')}) ---\n{indented_board}")
+                            except Exception:
+                                pass
+
+                        if not done:
+                            opp = "black" if turn == "white" else "white"
+                            opp_turn_msg = (
+                                f"Opponent ({turn}) played {args.get('uci_move', '?')}. "
+                                f"Board FEN: {fen or '(unknown)'}. Your move."
+                            )
+                            buffers[opp].append({"role": "user", "content": opp_turn_msg})
+                else:
+                    is_strike_one = False
+
+                result.steps.append(
+                    {
+                        "ply": actual_ply,
                         "color": turn,
-                        "uci": args.get("uci_move", ""),
-                        "cp_loss": _parse_result_field(tool_out, "cp_loss", 0),
-                        "move_score": _parse_result_field(tool_out, "move_score", 0.0),
-                    })
+                        "tool_name": tool,
+                        "arguments": args,
+                        "result": tool_out,
+                        "reward": reward,
+                        "done": done,
+                    }
+                )
+                result.rewards_history[turn].append(reward)
+                _emit_step(actual_ply, turn, f"{tool}({_args_repr(args)})", reward, done, None)
 
-                    if fen:
-                        try:
-                            import chess as _chess
-                            board_str = str(_chess.Board(fen))
-                            indented_board = "\n".join("      " + line for line in board_str.splitlines())
-                            log_info(f"   --- Board after ply {ply} ({args.get('uci_move', '?')}) ---\n{indented_board}")
-                        except Exception:
-                            pass
+                if done:
+                    final_map = metadata.get("final_reward") or {}
+                    result.final_reward = {
+                        "white": _clamp_phase2(final_map.get("white", reward)),
+                        "black": _clamp_phase2(final_map.get("black", reward)),
+                    }
+                    result.bucket = metadata.get("bucket") or {}
+                    result.result = metadata.get("result")
+                    result.done = True
+                    result.plies = actual_ply
+                    break
 
-                    if not done:
-                        opp = "black" if turn == "white" else "white"
-                        opp_turn_msg = (
-                            f"Opponent ({turn}) played {args.get('uci_move', '?')}. "
-                            f"Board FEN: {fen or '(unknown)'}. Your move."
-                        )
-                        buffers[opp].append({"role": "user", "content": opp_turn_msg})
-            else:
-                is_strike_one = False
-
-            result.steps.append(
-                {
-                    "ply": ply,
-                    "color": turn,
-                    "tool_name": tool,
-                    "arguments": args,
-                    "result": tool_out,
-                    "reward": reward,
-                    "done": done,
-                }
-            )
-            result.rewards_history[turn].append(reward)
-            _emit_step(ply, turn, f"{tool}({_args_repr(args)})", reward, done, None)
-
-            if done:
-                final_map = metadata.get("final_reward") or {}
-                result.final_reward = {
-                    "white": _clamp_phase2(final_map.get("white", reward)),
-                    "black": _clamp_phase2(final_map.get("black", reward)),
-                }
-                result.bucket = metadata.get("bucket") or {}
-                result.result = metadata.get("result")
-                result.done = True
-                result.plies = ply
-                break
-
-            if tool == "make_move" and not is_strike_one and not is_error:
-                turn = "black" if turn == "white" else "white"
+                if move_successful:
+                    actual_ply += 1
+                    turn = "black" if turn == "white" else "white"
 
             # Rate-limit pacing: sleep between every API call so we stay
             # under free-tier RPM caps (default 4 s → ~15 RPM max).
-            if step_delay > 0 and ply < max_plies:
+            if step_delay > 0 and actual_ply <= max_plies:
                 log_info(f"   ⏳ Pacing delay {step_delay:.1f}s (STEP_DELAY_SECONDS)...")
                 time.sleep(step_delay)
 
             # Context window pruning: keep the history manageable.
-            # We pass result.move_history to build the compact summary.
             buffers[turn] = _prune_buffer(buffers[turn], result.move_history, turn)
             opp = "black" if turn == "white" else "white"
             buffers[opp] = _prune_buffer(buffers[opp], result.move_history, opp)
 
         if not result.done:
-            # Ran out of plies. Ask the env for a final state-based score.
+            # Ran out of plies or steps. Ask the env for a final state-based score.
             try:
                 final_state_resp = client.get(f"{env_url}/state", timeout=10.0)
                 final_state_resp.raise_for_status()
             except Exception:
                 pass
-            result.plies = max_plies
+            result.plies = actual_ply
 
         return result
     finally:
@@ -1171,8 +1225,12 @@ def main() -> None:
         match = [m for m in model_pool if m[0] == requested_name]
         if match:
             return match[0]
-        # Not in pool, guess provider based on name or fallback to google
-        provider = "groq" if any(x in requested_name.lower() for x in ("llama", "mixtral", "gemma", "deepseek")) else "google"
+        # Not in pool, guess provider based on name (Gemma/Gemini -> Google, else Groq)
+        requested_lower = requested_name.lower()
+        if "gemma" in requested_lower or "gemini" in requested_lower:
+            provider = "google"
+        else:
+            provider = "groq"
         return (requested_name, provider)
 
     if args.white and args.black:

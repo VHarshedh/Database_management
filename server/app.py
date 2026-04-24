@@ -73,6 +73,28 @@ async def get_state_override():
     return {"error": "No active episode. Call /reset first."}
 
 
+@app.post("/finalize")
+async def finalize_episode_endpoint(request: Request):
+    """Early finalization for stuck/errored episodes."""
+    from server.chess_environment import ChessEnvironment
+    data = await request.json()
+    ep_id = data.get("episode_id")
+    reason = data.get("reason", "stuck_unknown")
+
+    active = None
+    if ep_id and ep_id in ChessEnvironment._instances:
+        active = ChessEnvironment._instances[ep_id]
+    elif ChessEnvironment._latest_instance:
+        active = ChessEnvironment._latest_instance
+
+    if active:
+        active._finalize_episode(result=reason)
+        # BUG 11 FIX: Remove from active instances once finalized.
+        ChessEnvironment._instances.pop(active._state.episode_id, None)
+        return active.snapshot()
+    return {"error": "No active episode found."}
+
+
 def main() -> None:
     """Run the server directly via `python -m chess_arena.server.app`."""
     import uvicorn

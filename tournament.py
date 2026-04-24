@@ -27,6 +27,10 @@ import os
 import random
 import sys
 import time
+
+# Ensure stdout supports Unicode characters even when redirected on Windows
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -180,9 +184,10 @@ def _save_match(record: MatchRecord) -> None:
     out_dir = Path(f"results/round{record.round_num}")
     out_dir.mkdir(parents=True, exist_ok=True)
     label = record.match_label.replace(" ", "_")
+    time_str = datetime.now().strftime("%H%M")
     fname = (
         out_dir /
-        f"{label}_{_safe_name(record.model_a)}_vs_{_safe_name(record.model_b)}.json"
+        f"{time_str}round{record.round_num}_{label}_{_safe_name(record.model_a)}_vs_{_safe_name(record.model_b)}.json"
     )
     payload = {
         "match_label": record.match_label,
@@ -281,13 +286,13 @@ def _determine_winner_from_result(
     #   resign_black     → Black resigned (White wins)
     #   dq_*_black       → Black disqualified (White wins)
     if "checkmate_white" in r or "resign_black" in r or (
-        ("dq_illegal_black" in r or "dq_eval_abuse_black" in r)
+        ("dq_illegal_black" in r or "dq_eval_abuse_black" in r or "stuck_black" in r)
     ):
         return model_white
 
     # Black wins symmetrically
     if "checkmate_black" in r or "resign_white" in r or (
-        ("dq_illegal_white" in r or "dq_eval_abuse_white" in r)
+        ("dq_illegal_white" in r or "dq_eval_abuse_white" in r or "stuck_white" in r)
     ):
         return model_black
 

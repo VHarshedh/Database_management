@@ -862,7 +862,7 @@ class ChessEnvironment(MCPEnvironment):
             self.bucket[loser]["outcome"] = OUTCOME_LOSS
             return
 
-        if result.startswith("dq_illegal_") or result.startswith("dq_eval_abuse_"):
+        if result.startswith("dq_"):
             offender = result.rsplit("_", 1)[1]
             winner = _other(offender)
             self.bucket[winner]["outcome"] = OUTCOME_DQ_WIN

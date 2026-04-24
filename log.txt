@@ -1,0 +1,155 @@
+──────────────────────────────────────────────────────────────
+  ROUND 1 — QUARTERFINALS
+──────────────────────────────────────────────────────────────
+
+  ♟  QF-1: gemini-3.1-flash-lite-preview (W) vs llama-3.1-8b-instant (B)
+
+   --- Ply 1 (step 1, white - gemini-3.1-flash-lite-preview) ---
+   🔧 Tool: make_move({"uci_move": "e2e4", "candidate_moves": ["e2e4", "d2d4"], "threat_analysis": "The board is in the starting position; there are no immediate threats.", "justification": "Opening with e4 is a classic, sound move that controls the center and opens lines for the queen and bishop."})     
+   📋 Result: Move e2e4 applied. turn=black cp_loss=0 move_score=0.50...
+   💰 Reward: 0.37
+   --- Board after ply 1 (e2e4) ---
+      r n b q k b n r
+      p p p p p p p p
+      . . . . . . . .
+      . . . . . . . .
+      . . . . P . . .
+      . . . . . . . .
+      P P P P . P P P
+      R N B Q K B N R
+[STEP] step=1 color=white action=make_move({"uci_move": "e2e4", "candidate_moves": ["e2e4", "d2d4"], "threat_analysis": "The board is in the starting position; there are no immediate threats.", "justification": "Opening with e4 is a classic, sound move that controls the center and opens lines for the queen and bishop."}) reward=0.37 done=false error=null
+   ⏳ Pacing delay 4.0s (STEP_DELAY_SECONDS)...
+
+   --- Ply 2 (step 2, black - llama-3.1-8b-instant) ---
+   🔧 Tool: analyze_board({"candidate_moves": ["e7e5", "d7d5"], "justification": "Control the center and develop my pieces to counter White's central push.", "threat_analysis": "White played e2e4, opening the center and preparing to develop other pieces. I must respond with a move that challenges their central control and develops my pieces."})
+   📋 Result: fen=rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1
+turn=black
+in_check=False
+move_number...
+   💰 Reward: 0.25
+[STEP] step=2 color=black action=analyze_board({"candidate_moves": ["e7e5", "d7d5"], "justification": "Control the center and develop my pieces to counter White's central push.", "threat_analysis": "White played e2e4, opening the center and preparing to develop other pieces. I must respond with a move that challenges their central control and develops my pieces."}) reward=0.25 done=false error=null       
+   ⏳ Pacing delay 4.0s (STEP_DELAY_SECONDS)...
+
+   --- Ply 2 (step 3, black - llama-3.1-8b-instant) ---
+   🔧 Tool: make_move({"candidate_moves": ["e7e5", "d7d5"], "justification": "Control the center and develop my pieces to counter White's central push.", "threat_analysis": "White played e2e4, opening the center and preparing to develop other pieces. I must respond with a move that challenges their central control and develops my pieces.", "uci_move": "e7e5"})
+   📋 Result: Move e7e5 applied. turn=white cp_loss=0 move_score=0.50...
+   💰 Reward: 0.37
+   --- Board after ply 2 (e7e5) ---
+      r n b q k b n r
+      p p p p . p p p
+      . . . . . . . .
+      . . . . p . . .
+      . . . . P . . .
+      . . . . . . . .
+      P P P P . P P P
+      R N B Q K B N R
+[STEP] step=2 color=black action=make_move({"candidate_moves": ["e7e5", "d7d5"], "justification": "Control the center and develop my pieces to counter White's central push.", "threat_analysis": "White played e2e4, opening the center and preparing to develop other pieces. I must respond with a move that challenges their central control and develops my pieces.", "uci_move": "e7e5"}) reward=0.37 done=false error=null
+   ⏳ Pacing delay 4.0s (STEP_DELAY_SECONDS)...
+
+   --- Ply 3 (step 4, white - gemini-3.1-flash-lite-preview) ---
+   🔧 Tool: make_move({"candidate_moves": ["g1f3", "b1c3"], "uci_move": "g1f3", "justification": "Developing the knight to f3 attacks the e5 pawn and prepares for kingside castling, following standard opening principles.", "threat_analysis": "The position is balanced. Black's e5 pawn is currently undefended by pieces, but protected by the queen. No immediate threats."})
+   📋 Result: Move g1f3 applied. turn=black cp_loss=0 move_score=0.50...
+   💰 Reward: 0.34
+   --- Board after ply 3 (g1f3) ---
+      r n b q k b n r
+      p p p p . p p p
+      . . . . . . . .
+      . . . . p . . .
+      . . . . P . . .
+      . . . . . N . .
+      P P P P . P P P
+      R N B Q K B . R
+[STEP] step=3 color=white action=make_move({"candidate_moves": ["g1f3", "b1c3"], "uci_move": "g1f3", "justification": "Developing the knight to f3 attacks the e5 pawn and prepares for kingside castling, following standard opening principles.", "threat_analysis": "The position is balanced. Black's e5 pawn is currently undefended by pieces, but protected by the queen. No immediate threats."}) reward=0.34 done=false error=null
+   ⏳ Pacing delay 4.0s (STEP_DELAY_SECONDS)...
+
+   --- Ply 4 (step 5, black - llama-3.1-8b-instant) ---
+   🔧 Tool: evaluate_position({"candidate_moves": ["g6", "c6"], "justification": "Develop my pieces and prepare to control the center.", "threat_analysis": "White played g1f3, developing their knight and preparing to develop other pieces. I must respond with a move that develops my pieces and prepares to control the center."})
+   📋 Result: Stockfish engine unavailable in this runtime....
+   💰 Reward: 0.33
+[STEP] step=4 color=black action=evaluate_position({"candidate_moves": ["g6", "c6"], "justification": "Develop my pieces and prepare to control the center.", "threat_analysis": "White played g1f3, developing their knight and preparing to develop other pieces. I must respond with a move that develops my pieces and prepares to control the center."}) reward=0.33 done=false error=null
+   ⏳ Pacing delay 4.0s (STEP_DELAY_SECONDS)...
+
+   --- Ply 4 (step 6, black - llama-3.1-8b-instant) ---
+   🔧 Tool: ping_humanhelper({"candidate_moves": ["g6", "c6"], "justification": "Develop my pieces and prepare to control the center.", "reason": "Unable to access Stockfish engine for evaluation.", "threat_analysis": "White played g1f3, developing their knight and preparing to develop other pieces. I must respond with a move that develops my pieces and prepares to control the center."})
+   📋 Result: Human helper is currently unavailable....
+   💰 Reward: 0.3
+[STEP] step=4 color=black action=ping_humanhelper({"candidate_moves": ["g6", "c6"], "justification": "Develop my pieces and prepare to control the center.", "reason": "Unable to access Stockfish engine for evaluation.", "threat_analysis": "White played g1f3, developing their knight and preparing to develop other pieces. I must respond with a move that develops my pieces and prepares to control the center."}) reward=0.30 done=false error=null
+   ⏳ Pacing delay 4.0s (STEP_DELAY_SECONDS)...
+
+   --- Ply 4 (step 7, black - llama-3.1-8b-instant) ---
+   🔧 Tool: analyze_board({"candidate_moves": ["g6", "c6"], "justification": "Develop my pieces and prepare to control the center.", "threat_analysis": "White played g1f3, developing their knight and preparing to develop other pieces. I must respond with a move that develops my pieces and prepares to control the center."})
+   📋 Result: fen=rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2
+turn=black
+in_check=False
+move_nu...
+   💰 Reward: 0.3
+[STEP] step=4 color=black action=analyze_board({"candidate_moves": ["g6", "c6"], "justification": "Develop my pieces and prepare to control the center.", "threat_analysis": "White played g1f3, developing their knight and preparing to develop other pieces. I must respond with a move that develops my pieces and prepares to control the center."}) reward=0.30 done=false error=null
+   ⏳ Pacing delay 4.0s (STEP_DELAY_SECONDS)...
+
+   --- Ply 4 (step 8, black - llama-3.1-8b-instant) ---
+   🔧 Tool: make_move({"candidate_moves": ["g6", "c6"], "justification": "Develop my pieces and prepare to control the center.", "threat_analysis": "White played g1f3, developing their knight and preparing to develop other pieces. I must respond with a move that develops my pieces and prepares to control the center.", "uci_move": "g6"})
+   📋 Result: ILLEGAL MOVE (strike 1/2): 'g6' is not a valid UCI string. Penalty applied (-0.05). You have one mor...
+   💰 Reward: 0.28
+[STEP] step=4 color=black action=make_move({"candidate_moves": ["g6", "c6"], "justification": "Develop my pieces and prepare to control the center.", "threat_analysis": "White played g1f3, developing their knight and preparing to develop other pieces. I must respond with a move that develops my pieces and prepares to control the center.", "uci_move": "g6"}) reward=0.28 done=false error=null
+   ⏳ Pacing delay 4.0s (STEP_DELAY_SECONDS)...
+
+   --- Ply 4 (step 9, black - llama-3.1-8b-instant) ---
+   🔧 Tool: make_move({"candidate_moves": ["g6", "c6"], "justification": "Develop my pieces and prepare to control the center.", "threat_analysis": "White played g1f3, developing their knight and preparing to develop other pieces. I must respond with a move that develops my pieces and prepares to control the center.", "uci_move": "c6"})
+   📋 Result: ILLEGAL MOVE (strike 2/2): 'c6' is not a valid UCI string. Disqualified....
+   💰 Reward: 0.27
+   --- Board after ply 4 (c6) ---
+      r n b q k b n r
+      p p p p . p p p
+      . . . . . . . .
+      . . . . p . . .
+      . . . . P . . .
+      . . . . . N . .
+      P P P P . P P P
+      R N B Q K B . R
+[STEP] step=4 color=black action=make_move({"candidate_moves": ["g6", "c6"], "justification": "Develop my pieces and prepare to control the center.", "threat_analysis": "White played g1f3, developing their knight and preparing to develop other pieces. I must respond with a move that develops my pieces and prepares to control the center.", "uci_move": "c6"}) reward=0.27 done=true error=null
+  ✅ gemini-3.1-flash-lite-preview wins (dq_illegal_black).
+  📁 Saved: results\round1\QF-1_gemini-3.1-flash-lite-preview_vs_llama-3.1-8b-instant.json
+
+  ♟  QF-2: llama-3.3-70b-versatile (W) vs gemma-4-26b-a4b-it (B)
+
+   --- Ply 1 (step 1, white - llama-3.3-70b-versatile) ---
+   🔧 Tool: make_move({"candidate_moves": ["e2e4", "d2d4", "b1c3"], "justification": "Playing d2d4 to control the center and create space for my pieces to develop, while also preparing to develop other pieces.", "threat_analysis": "The board is in the initial state, with no immediate dangers or threats. The center of the board is open, and control of it will be crucial in the early game.", "uci_move": "d2d4"})
+   📋 Result: Move d2d4 applied. turn=black cp_loss=0 move_score=0.50...
+   💰 Reward: 0.37
+   --- Board after ply 1 (d2d4) ---
+      r n b q k b n r
+      p p p p p p p p
+      . . . . . . . .
+      . . . . . . . .
+      . . . P . . . .
+      . . . . . . . .
+      P P P . P P P P
+      R N B Q K B N R
+[STEP] step=1 color=white action=make_move({"candidate_moves": ["e2e4", "d2d4", "b1c3"], "justification": "Playing d2d4 to control the center and create space for my pieces to develop, while also preparing to develop other pieces.", "threat_analysis": "The board is in the initial state, with no immediate dangers or threats. The center of the board is open, and control of it will be crucial in the early game.", "uci_move": "d2d4"}) reward=0.37 done=false error=null
+   ⏳ Pacing delay 4.0s (STEP_DELAY_SECONDS)...
+
+   --- Ply 2 (step 2, black - gemma-4-26b-a4b-it) ---
+   🔧 Tool: analyze_board({"candidate_moves": ["c7c5", "c7c6", "d7d5", "Nf6", "Nf6"], "threat_analysis": "No immediate threats. No pieces are developed yet.", "justification": "The game has started with 1. d4. White's move 1. d4 controls theLooking for a new game start."})
+   📋 Result: fen=rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1
+turn=black
+in_check=False
+move_number...
+   💰 Reward: 0.2
+[STEP] step=2 color=black action=analyze_board({"candidate_moves": ["c7c5", "c7c6", "d7d5", "Nf6", "Nf6"], "threat_analysis": "No immediate threats. No pieces are developed yet.", "justification": "The game has started with 1. d4. White's move 1. d4 controls theLooking for a new game start."}) reward=0.20 done=false error=null
+   ⏳ Pacing delay 4.0s (STEP_DELAY_SECONDS)...
+
+   --- Ply 2 (step 3, black - gemma-4-26b-a4b-it) ---
+   🔧 Tool: list_legal_moves({"justification": "White's 1. d4 controls the center. Black's response should aim to control the center or challenge the center. Standard responses to 1. d4 are standard.", "threat_analysis": "No immediate threats. White's d4 pawn is the ability to be challenged.", "candidate_moves": ["c7c5", "c7c6", "d7d5", "Nf6"]})
+   📋 Result: legal_moves=g8h6,g8f6,b8c6,b8a6,h7h6,g7g6,f7f6,e7e6,d7d6,c7c6,b7b6,a7a6,h7h5,g7g5,f7f5,e7e5,d7d5,c7c...
+   💰 Reward: 0.23
+[STEP] step=2 color=black action=list_legal_moves({"justification": "White's 1. d4 controls the center. Black's response should aim to control the center or challenge the center. Standard responses to 1. d4 are standard.", "threat_analysis": "No immediate threats. White's d4 pawn is the ability to be challenged.", "candidate_moves": ["c7c5", "c7c6", "d7d5", "Nf6"]}) reward=0.23 done=false error=null      
+   ⏳ Pacing delay 4.0s (STEP_DELAY_SECONDS)...
+
+   --- Ply 2 (step 4, black - gemma-4-26b-a4b-it) ---
+   🔧 Tool: evaluate_position({"threat_analysis": "No immediate threats. White's d4 pawn is the ability to beBe careful with the evaluation.", "justification": "I need to evaluate the evaluation of the candidate moves.", "candidate_moves": []})
+   📋 Result: Stockfish engine unavailable in this runtime....
+   💰 Reward: 0.17
+[STEP] step=2 color=black action=evaluate_position({"threat_analysis": "No immediate threats. White's d4 pawn is the ability to beBe careful with the evaluation.", "justification": "I need to evaluate the evaluation of the candidate moves.", "candidate_moves": []}) reward=0.17 done=false error=null       
+   ⏳ Pacing delay 4.0s (STEP_DELAY_SECONDS)...
+
+   --- Ply 2 (step 5, black - gemma-4-26b-a4b-it) ---

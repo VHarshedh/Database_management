@@ -91,15 +91,18 @@ def _sf_eval_cp(fen: str) -> Optional[int]:
         _ENGINE.set_fen_position(fen)
         ev = _ENGINE.get_evaluation()
         is_white_turn = " w " in fen
+        # Stockfish python lib returns CP relative to side to move.
+        # Normalize to White's perspective (+ = White better).
         if ev["type"] == "cp":
             val = ev["value"]
             return val if is_white_turn else -val
         elif ev["type"] == "mate":
             m = ev["value"]
+            # Assign a very high value for mate
             val = (100000 - abs(m) * 10) * (1 if m > 0 else -1)
             return val if is_white_turn else -val
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[visualizer] Eval error: {e}")
     return None
 
 
@@ -107,10 +110,11 @@ def _sf_eval_str(cp: Optional[int]) -> str:
     if cp is None:
         return "?"
     if abs(cp) >= 99000:
-        sign = "+" if cp > 0 else "-"
-        return f"{sign}M{(100000 - abs(cp)) // 10}"
+        mate_in = (100000 - abs(cp)) // 10
+        sign = "#" if cp > 0 else "-#"
+        return f"{sign}{mate_in}"
     pawns = cp / 100.0
-    return f"{pawns:+.2f}" if pawns != 0 else "0.00"
+    return f"{pawns:+.1f}" if pawns != 0 else "0.0"
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +136,12 @@ def _extract_moves(task: Dict[str, Any]) -> List[Dict[str, Any]]:
         uci = args.get("uci_move", "")
         if not uci:
             continue
-        result_str = step.get("result", "")
+        
+        result_str = str(step.get("result", ""))
+        # Only include successful moves (skip illegal move attempts)
+        if "ILLEGAL MOVE" in result_str:
+            continue
+            
         cp_loss = _parse_field(result_str, "cp_loss", 0)
         move_score = _parse_field(result_str, "move_score", 0.0)
         moves.append({
@@ -175,30 +184,36 @@ def _compute_evals(moves: List[Dict[str, Any]]) -> List[Optional[int]]:
 
 
 def _eval_bar_html(cp: Optional[int]) -> str:
-    """Render a vertical eval bar as HTML."""
+    """Render a premium vertical eval bar as HTML (White on bottom, Black on top)."""
     if cp is None:
         white_pct = 50.0
         label = "?"
     else:
-        # Sigmoid-like mapping: cp -> 0..100%
+        # Sigmoid mapping: cp -> 0..100%
         import math
+        # 400cp = 73%, 1000cp = 92%
         white_pct = 50 + 50 * (2 / (1 + math.exp(-cp / 400)) - 1)
-        white_pct = max(2, min(98, white_pct))
+        white_pct = max(5, min(95, white_pct))
         label = _sf_eval_str(cp)
 
     black_pct = 100 - white_pct
-    # Determine label colour and position
+    
+    # Label styling: position it inside the larger part of the bar
     if white_pct >= 50:
-        label_style = "color:#fff;bottom:2px;position:absolute;left:50%;transform:translateX(-50%);font-size:11px;font-weight:700;"
+        # White winning: label at bottom of black part or top of white part?
+        # Let's put it at the "horizon" for small advantages, or fixed for large ones.
+        label_pos = f"bottom: {white_pct - 12}%" if white_pct < 85 else "bottom: 10px"
+        label_color = "#1c2b38" if white_pct > 60 else "#ffffff"
     else:
-        label_style = "color:#fff;top:2px;position:absolute;left:50%;transform:translateX(-50%);font-size:11px;font-weight:700;"
+        label_pos = f"top: {black_pct - 12}%" if black_pct < 85 else "top: 10px"
+        label_color = "#ffffff" if black_pct > 60 else "#1c2b38"
 
     return f"""
-<div style="display:flex;flex-direction:column;align-items:center;height:420px;width:36px;border-radius:4px;overflow:hidden;border:1px solid #3d4f5c;position:relative;">
-  <div style="width:100%;height:{black_pct:.1f}%;background:#1c2b38;transition:height 0.4s ease;"></div>
-  <div style="width:100%;height:{white_pct:.1f}%;background:#e8d5b0;transition:height 0.4s ease;position:relative;">
-    <span style="{label_style}">{label}</span>
+<div style="display:flex;flex-direction:column;align-items:center;height:450px;width:32px;border-radius:4px;overflow:hidden;border:1px solid #444;position:relative;background:#1c2b38;box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
+  <div style="width:100%;height:{black_pct:.1f}%;background:#1c2b38;transition:height 0.4s cubic-bezier(0.4, 0, 0.2, 1);"></div>
+  <div style="width:100%;height:{white_pct:.1f}%;background:#e8d5b0;transition:height 0.4s cubic-bezier(0.4, 0, 0.2, 1);position:relative;">
   </div>
+  <span style="position:absolute;{label_pos};left:50%;transform:translateX(-50%);font-size:11px;font-weight:900;color:{label_color};z-index:10;pointer-events:none;text-shadow: 0 0 2px rgba(0,0,0,0.2);">{label}</span>
 </div>"""
 
 
@@ -306,7 +321,7 @@ def render_step(
     evals_cache: List[Optional[int]],
 ) -> Tuple[str, str, str, str, str, str, str, str]:
     """Render board, eval bar, reasoning, move list. Returns 8 values."""
-    empty = ("", "", "No game loaded", "", "", "", "", "")
+    empty = ("", "", "No game loaded", "Select a game to begin", "", "", "", "")
     if not game_name or not data or ply < 0:
         return empty
 
@@ -318,13 +333,16 @@ def render_step(
         return empty
 
     moves = _extract_moves(task)
-    total = len(moves)
-    at_end = ply >= total and total > 0
+    total_plies = len(moves)
+    at_end = ply >= total_plies and total_plies > 0
 
     # --- Build board ---
     board = chess.Board()
     current_move_info: Optional[Dict[str, Any]] = None
-    for i in range(min(ply, total)):
+    
+    # We want to show the board AFTER 'ply' moves have been played.
+    # If ply=0, it's the start.
+    for i in range(min(ply, total_plies)):
         uci = moves[i].get("uci", "")
         try:
             board.push_uci(uci)
@@ -334,9 +352,8 @@ def render_step(
             current_move_info = moves[i]
 
     lastmove = board.peek() if board.move_stack else None
-    # Flip board for black (optional, comment out to keep white-up always)
     board_svg = chess.svg.board(board=board, size=450, lastmove=lastmove)
-    board_html = f"<div style='display:flex;justify-content:center;'>{board_svg}</div>"
+    board_html = f"<div style='display:flex;justify-content:center;filter: drop-shadow(0 10px 20px rgba(0,0,0,0.4));'>{board_svg}</div>"
 
     # --- Eval bar ---
     cp = evals_cache[ply] if evals_cache and ply < len(evals_cache) else None
@@ -349,29 +366,34 @@ def render_step(
     # --- Move list ---
     move_list = _move_list_html(moves, ply)
 
-    # --- Status ---
-    status = f"Ply {ply} / {total}  |  {'Game Start' if ply == 0 else ''}"
+    # --- Status & Reasoning ---
+    status = f"Ply {ply} / {total_plies}  |  {'Game Start' if ply == 0 else ''}"
     threat = candidates = justification = engine_eval = ""
 
     if current_move_info and ply > 0:
-        color = current_move_info.get("color", "").capitalize()
+        color = current_move_info.get("color", "").lower()
         uci = current_move_info.get("uci", "")
-        model_name = data.get(f"model_{color.lower()}", "?")
+        model_name = data.get(f"model_{color}", "?")
         cp_loss = current_move_info.get("cp_loss", "N/A")
         mv_score = current_move_info.get("move_score", "N/A")
 
-        status = f"Ply {ply}/{total}  ·  {color} ({model_name})  ·  {uci}"
+        status = f"Ply {ply}/{total_plies}  ·  {color.capitalize()} ({model_name})  ·  {uci}"
         engine_eval = f"CP Loss: {cp_loss}   |   Move Score: {mv_score}   |   SF Eval: {_sf_eval_str(cp)}"
 
+        # Find the reasoning step that matches this move and ply.
+        # Note: server 'ply' in steps might include illegal attempts, so we match by color + move.
         steps = task.get("steps", [])
+        # Iterate backwards to find the ACTUAL successful move attempt if there were multiple.
         for step in reversed(steps):
             if step.get("tool_name") == "make_move":
                 args = step.get("arguments", {})
-                if args.get("uci_move") == uci and step.get("color") == color.lower():
-                    threat = args.get("threat_analysis", "")
+                # Match by uci_move and color. 
+                # We also check if the step's index roughly corresponds to our ply if possible.
+                if args.get("uci_move") == uci and step.get("color") == color:
+                    threat = args.get("threat_analysis", "No threat analysis provided.")
                     cand_list = args.get("candidate_moves", [])
                     candidates = "\n".join(f"• {c}" for c in cand_list) if isinstance(cand_list, list) else str(cand_list)
-                    justification = args.get("justification", "")
+                    justification = args.get("justification", "No justification provided.")
                     break
 
     combined_board = f"{banner}{board_html}"
@@ -453,7 +475,8 @@ def build_app() -> gr.Blocks:
             file_input = gr.File(label="Upload JSON Log", file_types=[".json"])
             game_dropdown = gr.Dropdown(label="Select Game", choices=[], interactive=True, scale=1)
             sf_status = gr.Markdown(
-                f"**Stockfish:** {'✅ Ready (depth ' + str(SF_DEPTH) + ')' if _ENGINE else '❌ Not found — eval bar disabled'}"
+                f"**Stockfish:** {'✅ Ready (depth ' + str(SF_DEPTH) + ')' if _ENGINE else '❌ Not found — eval bar disabled'}",
+                elem_id="stockfish-status"
             )
 
         # --- Main layout ---
@@ -607,17 +630,103 @@ def build_app() -> gr.Blocks:
 
 if __name__ == "__main__":
     _css = """
-    body { background: #ffffff; }
-    .gradio-container { background: #ffffff !important; color: #333333 !important; }
-    #board-col { display: flex; flex-direction: column; align-items: center; }
-    textarea, input[type=text] { background: #f8f9fa !important; color: #333333 !important; border: 1px solid #ced4da !important; }
-    button { background: #f8f9fa !important; color: #333333 !important; border: 1px solid #ced4da !important; }
-    button:hover { background: #e2e6ea !important; }
-    /* Fix markdown text color */
-    .gradio-container .markdown-text { color: #333333 !important; }
-    .gradio-container h1, .gradio-container h2, .gradio-container h3 { color: #333333 !important; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=Outfit:wght@400;600;700&display=swap');
+    
+    body { background: #0f172a; font-family: 'Inter', sans-serif; color: #f8fafc; }
+    .gradio-container { background: #0f172a !important; color: #f8fafc !important; }
+    
+    /* Ensure all text on dark background is pure white */
+    .gradio-container, .gradio-container p, .gradio-container span, .gradio-container .markdown-text, .gradio-container .prose { 
+        color: #ffffff !important; 
+    }
+    
+    /* LABELS & TITLES IN LIGHT BOXES - Force Black Text */
+    .gradio-container .label, 
+    .gradio-container .label span, 
+    .gradio-container .block-title, 
+    .gradio-container .block-title span, 
+    .gradio-container .gr-label,
+    .gradio-container .gr-box-label {
+        color: #000000 !important;
+        background: #e2e8f0 !important; /* Slightly more solid bluish-white */
+        font-weight: 900 !important;
+        text-transform: uppercase;
+        font-size: 11px;
+    }
+
+    /* Stockfish Status specific fix */
+    #stockfish-status, #stockfish-status p, #stockfish-status span {
+        color: #4ade80 !important; /* Brighter green */
+        font-weight: 600 !important;
+    }
+    
+    /* Title and headers */
+    .gradio-container h1, .gradio-container h2, .gradio-container h3 { 
+        color: #ffffff !important; 
+        font-family: 'Outfit', sans-serif;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+    }
+    
+    #board-col { 
+        display: flex; 
+        flex-direction: column; 
+        align-items: center; 
+        padding: 24px; 
+        background: rgba(30, 41, 59, 0.8); 
+        border-radius: 16px; 
+        border: 1px solid rgba(255,255,255,0.15); 
+        backdrop-filter: blur(16px);
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+    }
+    
+    textarea, input[type=text] { 
+        background: #1e293b !important; 
+        color: #ffffff !important; 
+        border: 1px solid #475569 !important; 
+        border-radius: 8px !important;
+    }
+    
+    .gradio-container .form { background: #1e293b !important; border: 1px solid #475569 !important; }
+    
+    button { 
+        background: #334155 !important; 
+        color: #ffffff !important; 
+        border: 1px solid #475569 !important; 
+        border-radius: 8px !important;
+        transition: all 0.2s ease !important;
+        font-weight: 600 !important;
+        padding: 8px 16px !important;
+    }
+    button:hover { background: #475569 !important; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    button:active { transform: translateY(0); }
+    
+    /* Auto-play pulse effect */
+    .btn-active { animation: pulse 2s infinite; background: #15803d !important; border-color: #22c55e !important; }
+    @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+        70% { box-shadow: 0 0 0 10px rgba(34, 197, 94, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+    }
+    
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
     """
-    _theme = gr.themes.Base(primary_hue="green", neutral_hue="slate")
+    _theme = gr.themes.Soft(
+        primary_hue="indigo",
+        neutral_hue="slate",
+        font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif", "system-ui", "sans-serif"],
+    ).set(
+        body_background_fill="#0f172a",
+        block_background_fill="#1e293b",
+        block_border_width="1px",
+        block_title_text_color="#f8fafc",
+        input_background_fill="#0f172a",
+    )
+    
     app = build_app()
     app.launch(
         server_name="127.0.0.1",
