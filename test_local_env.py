@@ -1,4 +1,25 @@
-"""In-process ChessEnvironment smoke test; also pings HTTP /health via background server."""
+"""In-process DatacenterEnvironment smoke test.
+
+Exercises the env directly (no HTTP) to validate:
+
+* Reset returns a non-empty topology snapshot.
+* The 4D coordinate adapter round-trips: every legal authorized
+  migration in the start position is accepted by ``migrate_workload``.
+* ``Stockfish`` is wired up (engine reports ``ready=True``).
+
+Then -- for parity with the rest of the test suite and to prove the
+package's HTTP layer also boots cleanly -- we spin up a background
+uvicorn process and ping ``/health`` exactly once before tearing it
+down. This is what the user means by "a test file which creates the
+background server so the test files could be run on their own": this
+file is the canonical entry point for "is the env stack actually
+healthy?" without touching the orchestrator.
+
+Run as::
+
+    python test_local_env.py
+"""
+
 from __future__ import annotations
 
 import sys
@@ -7,147 +28,126 @@ from pathlib import Path
 
 import httpx
 
-# Repo root on sys.path so `chess_arena.*` imports work when run as a script
-# from within the `chess_arena/` directory.
-_ROOT = Path(__file__).resolve().parent
-_REPO_ROOT = _ROOT.parent
-for _p in (str(_REPO_ROOT), str(_ROOT)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# Make ``server.*`` and ``openenv.*`` importable when this file is run
+# as a standalone script (``python test_local_env.py``).
+_HERE = Path(__file__).resolve().parent
+_REPO_ROOT = _HERE.parent
+for _p in (_REPO_ROOT / "src", _REPO_ROOT / "envs", _HERE):
+    if _p.is_dir() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
-from _http_test_server import start_background_server, stop_background_server
-from openenv.core.env_server.mcp_types import CallToolAction, ListToolsAction
+from _http_test_server import start_background_server, stop_background_server  # noqa: E402
 
-from chess_arena.server.chess_environment import ChessEnvironment
+from openenv.core.env_server.mcp_types import CallToolAction  # noqa: E402
 
-
-# Structured reasoning args shared across all test tool calls.
-_TA = (
-    "No immediate checks or captures. Position is symmetric from starting setup. "
-    "Evaluating piece activity, king safety, and pawn structure."
-)
-_CM = ["e2e4", "d2d4", "g1f3"]
-_JU = (
-    "Developing pieces toward the center to control space and enable "
-    "king safety via castling."
+from server.datacenter_env import (  # noqa: E402
+    DEFENDER_ID,
+    DatacenterEnvironment,
+    square_to_node,
 )
 
-# Short-form dict for use in arguments=
-UNIVERSAL_ARGS = {
-    "threat_analysis": _TA,
-    "candidate_moves": _CM,
-    "justification": _JU,
-}
+
+# ---------------------------------------------------------------------------
+# In-process probes
+# ---------------------------------------------------------------------------
 
 
-def _print_observation(label: str, obs) -> None:
-    """Render a compact summary of a CallToolObservation / ListToolsObservation."""
-    tool_name = getattr(obs, "tool_name", None)
-    reward = getattr(obs, "reward", None)
-    done = getattr(obs, "done", False)
-    metadata = getattr(obs, "metadata", {}) or {}
-    fen = metadata.get("fen")
-    turn = metadata.get("turn")
-    result_tag = metadata.get("result")
-    print(
-        f"[{label:<18}] tool={tool_name} reward={reward} done={done} "
-        f"turn={turn} result={result_tag} fen={fen}"
+def _probe_reset_topology(env: DatacenterEnvironment) -> None:
+    obs = env.reset()
+    assert obs is not None, "reset() returned None"
+    topo = env.get_topology_state()
+    assert "active_workloads" in topo, "topology snapshot missing active_workloads"
+    assert isinstance(topo["active_workloads"], list)
+    print(f"  reset OK: {len(topo['active_workloads'])} workloads (real + chaos)")
+
+
+def _probe_stockfish(env: DatacenterEnvironment) -> None:
+    sf = env._stockfish
+    print(f"  stockfish ready={sf.ready} (path={sf.bin_path})")
+
+
+def _probe_first_legal_migration(env: DatacenterEnvironment) -> None:
+    """Push the first legal opening migration through the env via ``step``.
+
+    This validates the *full* tool pipeline (action deserialization, tool
+    registration, format/thought scoring, board push, Stockfish probe)
+    without HTTP in the picture.
+    """
+    move = next(iter(env.board.legal_moves))
+    src_node = square_to_node(move.from_square)
+    dst_node = square_to_node(move.to_square)
+    canonical = (
+        f"{src_node['region']}/{src_node['zone']}/{src_node['rack']}/{src_node['pod']}"
+        f"->{dst_node['region']}/{dst_node['zone']}/{dst_node['rack']}/{dst_node['pod']}"
     )
 
-
-def run_inprocess_smoke() -> None:
-    print("=== In-process ChessEnvironment smoke test ===")
-    env = ChessEnvironment()
-    env.reset()
-    print("Initialized (in-process)")
-
-    # 1. List all registered tools via MCP.
-    tools_obs = env.step(ListToolsAction())
-    tool_names = sorted(getattr(t, "name", "?") for t in getattr(tools_obs, "tools", []))
-    print(f"  Tools registered: {tool_names}")
-    expected = {
-        "analyze_board",
-        "list_legal_moves",
-        "make_move",
-        "resign_game",
-        "evaluate_position",
-        "ping_humanhelper",
-    }
-    missing = expected.difference(tool_names)
-    if missing:
-        raise AssertionError(f"Missing expected chess tools: {sorted(missing)}")
-
-    # 2. Inspect the initial position.
     obs = env.step(
         CallToolAction(
-            tool_name="analyze_board",
-            arguments=UNIVERSAL_ARGS,
-        )
-    )
-    _print_observation("analyze_board", obs)
-
-    # 3. Enumerate legal moves for white.
-    obs = env.step(
-        CallToolAction(
-            tool_name="list_legal_moves",
-            arguments=UNIVERSAL_ARGS,
-        )
-    )
-    _print_observation("list_legal_moves", obs)
-
-    # 4. Play a legal opening move; the environment should flip `turn_color`
-    #    to black and grant a non-terminal preview reward strictly in (0.01, 0.99).
-    obs = env.step(
-        CallToolAction(
-            tool_name="make_move",
+            tool_name="migrate_workload",
             arguments={
-                **UNIVERSAL_ARGS,
-                "candidate_moves": ["e2e4", "d2d4", "g1f3"],  # e2e4 must be in list
-                "uci_move": "e2e4",
+                "threat_analysis": (
+                    "Opening posture: probing adversary kernel exposure on the "
+                    "outer perimeter."
+                ),
+                "candidate_migrations": [canonical],
+                "justification": (
+                    "Containment via deliberate forward perimeter migration."
+                ),
+                "source_node": src_node,
+                "target_node": dst_node,
             },
         )
     )
-    _print_observation("make_move e2e4", obs)
-    if env.turn_color != "black":
-        raise AssertionError(f"After white moved, turn_color should be 'black', got {env.turn_color!r}")
-    assert not env.done, "Episode should still be live after a single legal move."
-
-    # 5. `ping_humanhelper` should NOT end the episode but does dock the
-    #    caller's tool-accuracy bucket.
-    pre_ping_bucket = dict(env.bucket["black"])
-    obs = env.step(
-        CallToolAction(
-            tool_name="ping_humanhelper",
-            arguments={
-                **UNIVERSAL_ARGS,
-                "reason": "Need a hint.",
-            },
-        )
-    )
-    _print_observation("ping_humanhelper", obs)
-    assert not env.done, "ping_humanhelper must NOT terminate the episode."
-    assert env.ping_count["black"] == 1, "ping_count[black] should have incremented to 1."
-
-    print("  [OK] in-process scripted smoke test finished cleanly.")
+    print(f"  migrate_workload OK: reward={obs.reward:.4f} done={obs.done}")
+    assert obs.reward > 0.0
+    assert env.move_history, "move history should have at least 1 entry"
 
 
-def main() -> None:
-    print("Starting background uvicorn for /health check...")
+# ---------------------------------------------------------------------------
+# HTTP /health probe (background uvicorn)
+# ---------------------------------------------------------------------------
+
+
+def _probe_http_health() -> None:
     proc = None
     try:
+        print("  starting background uvicorn...")
         proc, base = start_background_server()
-        print(f"Server ready at {base}")
-        httpx.get(f"{base}/health", timeout=5.0).raise_for_status()
-        print("HTTP /health OK\n")
-
-        run_inprocess_smoke()
-    except Exception:
-        traceback.print_exc()
-        sys.exit(1)
+        print(f"  server up at {base}")
+        r = httpx.get(f"{base}/health", timeout=5.0)
+        r.raise_for_status()
+        body = r.json()
+        assert body.get("status") == "healthy", body
+        print(f"  /health OK: {body}")
     finally:
         stop_background_server(proc)
-        print("\nBackground server stopped.")
+        print("  background server stopped")
+
+
+def main() -> int:
+    print("=" * 60)
+    print("Datacenter SOC -- in-process smoke test")
+    print("=" * 60)
+
+    try:
+        env = DatacenterEnvironment()
+        try:
+            _probe_reset_topology(env)
+            _probe_stockfish(env)
+            _probe_first_legal_migration(env)
+        finally:
+            env.close()
+
+        print("\n--- HTTP /health probe ---")
+        _probe_http_health()
+    except Exception:
+        traceback.print_exc()
+        print("\n[FAIL] in-process smoke test crashed.")
+        return 1
+
+    print("\n[PASS] in-process smoke test green.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -885,7 +885,7 @@ def build_app() -> Tuple[gr.Blocks, gr.themes.Soft]:
             with gr.Column(scale=4, min_width=320, elem_id="board-col"):
                 board_html = gr.HTML()
 
-                with gr.Row(elem_classes=["nav-controls", "v-nav-row"]):
+                with gr.Row(elem_classes="nav-controls v-nav-row"):
                     btn_start = gr.Button("⏮", scale=0, min_width=48, variant="secondary", elem_id="v-btn-start")
                     btn_prev = gr.Button("◀", scale=0, min_width=48, variant="secondary", elem_id="v-btn-prev")
                     btn_next = gr.Button("▶", scale=0, min_width=48, variant="secondary", elem_id="v-btn-next")

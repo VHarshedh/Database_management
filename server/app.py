@@ -4,11 +4,18 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""FastAPI + WebSocket server for the Chess Arena OpenEnv environment."""
+"""FastAPI + WebSocket server for the Datacenter Workload Migration env.
 
-import os
-from fastapi import Request
+The environment is a re-skinned chess simulation: an LLM agent acts as either
+DEFENDER or ADVERSARY in a Global SOC, migrating workloads across a 4D
+``(region, zone, rack, pod)`` tensor. Internally we still drive python-chess
++ Stockfish; the adapter layer lives in :mod:`datacenter_env`.
+"""
+
 import json
+import os  # noqa: F401  (kept for parity with the previous server module)
+
+from fastapi import Request
 
 from openenv.core.env_server.http_server import create_app
 from openenv.core.env_server.mcp_types import (
@@ -17,16 +24,16 @@ from openenv.core.env_server.mcp_types import (
 )
 
 try:
-    from .chess_environment import ChessEnvironment, _current_episode_id
+    from .datacenter_env import DatacenterEnvironment, _current_episode_id
 except ImportError:
-    from server.chess_environment import ChessEnvironment, _current_episode_id
+    from server.datacenter_env import DatacenterEnvironment, _current_episode_id
 
 
 app = create_app(
-    ChessEnvironment,
+    DatacenterEnvironment,
     CallToolAction,
     CallToolObservation,
-    env_name="chess_arena",
+    env_name="datacenter_arena",
 )
 
 
@@ -57,48 +64,47 @@ async def health_check() -> dict:
     return {"status": "healthy"}
 
 
-# --- BUG 3 FIX: OVERRIDE /state TO PREVENT 500 ERRORS ---
-# 1. Remove the broken /state route provided by openenv-core
+# Replace the framework's default /state endpoint with one that returns the
+# active episode's state instead of throwing 500 when no episode is loaded.
 for i, route in enumerate(app.routes):
     if getattr(route, "path", "") == "/state" and "GET" in getattr(route, "methods", []):
         app.routes.pop(i)
         break
 
-# 2. Replace it with a safe version that returns the active episode's state
+
 @app.get("/state")
 async def get_state_override():
-    from server.chess_environment import ChessEnvironment
-    if getattr(ChessEnvironment, "_latest_instance", None) is not None:
-        return ChessEnvironment._latest_instance.state
-    return {"error": "No active episode. Call /reset first."}
+    if getattr(DatacenterEnvironment, "_latest_instance", None) is not None:
+        return DatacenterEnvironment._latest_instance.state
+    return {"error": "No active engagement. Call /reset first."}
 
 
 @app.post("/finalize")
 async def finalize_episode_endpoint(request: Request):
-    """Early finalization for stuck/errored episodes."""
-    from server.chess_environment import ChessEnvironment
+    """Early finalization for stuck/errored engagements."""
     data = await request.json()
     ep_id = data.get("episode_id")
     reason = data.get("reason", "stuck_unknown")
 
     active = None
-    if ep_id and ep_id in ChessEnvironment._instances:
-        active = ChessEnvironment._instances[ep_id]
-    elif ChessEnvironment._latest_instance:
-        active = ChessEnvironment._latest_instance
+    if ep_id and ep_id in DatacenterEnvironment._instances:
+        active = DatacenterEnvironment._instances[ep_id]
+    elif DatacenterEnvironment._latest_instance:
+        active = DatacenterEnvironment._latest_instance
 
     if active:
         active._finalize_episode(result=reason)
-        # BUG 11 FIX: Remove from active instances once finalized.
-        ChessEnvironment._instances.pop(active._state.episode_id, None)
+        DatacenterEnvironment._instances.pop(active._state.episode_id, None)
         return active.snapshot()
-    return {"error": "No active episode found."}
+    return {"error": "No active engagement found."}
 
 
 def main() -> None:
-    """Run the server directly via `python -m chess_arena.server.app`."""
+    """Run the server directly via `python -m server.app`."""
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
 if __name__ == "__main__":
     main()

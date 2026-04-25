@@ -4,3 +4,8 @@
 .env.test.local
 .env.production.local
 results/
+__pycache__/
+.ipynb_checkpoints/
+.venv/
+logs/
+*.log
