@@ -1,0 +1,26 @@
+.gitignore
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzw
+*.pyzwz
+*.txt
+*.log
+
+.venv
+.env
+.env.local
+__pycache__
+*.pyc
+results/
+.git
+
+# Not required for the API server (smaller build context)
+test_*.py
+_http_test_server.py
+visualizer.py
+tournament.py
+train.ipynb
+engine/stockfish.exe
