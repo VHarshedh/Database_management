@@ -28,6 +28,7 @@ from server.datacenter_env import (  # type: ignore[import-not-found]
     ADVERSARY_ID,
     DEFENDER_ID,
     NonRoutableAxialError,
+    node_to_sector,
     node_to_square,
 )
 
@@ -118,7 +119,8 @@ def test_stub_adversary_avoids_shadow_nodes() -> None:
 
 def test_stub_proposes_only_node_to_square_routable_targets() -> None:
     """A stricter form: every node in every stub-proposed migration must
-    survive ``node_to_square`` without raising ``NonRoutableAxialError``."""
+    survive ``node_to_square`` / ``node_to_sector`` without raising
+    ``NonRoutableAxialError``."""
     topo = _topology_snapshot()
     profiles = ("defender", "db_backup", "viral_traffic", "chaos_monkey")
     for _ in range(40):
@@ -130,6 +132,7 @@ def test_stub_proposes_only_node_to_square_routable_targets() -> None:
                 node = out["arguments"][key]
                 try:
                     node_to_square(node)
+                    node_to_sector(node)
                 except NonRoutableAxialError as exc:  # pragma: no cover
                     raise AssertionError(
                         f"stub {prof} proposed a non-routable {key}={node}: {exc}"

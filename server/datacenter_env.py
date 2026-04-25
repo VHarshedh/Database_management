@@ -7,28 +7,28 @@
 """
 Global SOC Datacenter Simulation OpenEnv environment.
 
-Adapter on top of `python-chess` + Stockfish: every chess piece, square and
-move is re-skinned into SOC datacenter terminology. The high-level code is
-chess-free - it speaks only in terms of DEFENDER / ADVERSARY tiers, 4D
+Adapter on top of a third-party board backend + Stockfish: every backend asset,
+sector and transition is re-skinned into SOC datacenter terminology. The
+high-level code is backend-free - it speaks only in terms of DEFENDER /
+ADVERSARY tiers, 4D
 ``(region, zone, rack, pod)`` nodes, and workload migrations.
 
-The only places we still touch ``chess.WHITE`` / ``chess.BLACK`` are the two
-private helpers :func:`_tier_for_color` and :func:`_color_for_tier`, which
-exist purely so we can call ``board.push``, ``piece.color``, and
-``chess.engine`` with the constants the third-party library requires.
+The only places we still touch backend color constants are the two private
+helpers :func:`_tier_for_color` and :func:`_color_for_tier`, which exist purely
+so we can call engine-facing APIs with the constants the library requires.
 
 Tier model
 ----------
 Two access tiers operate on the simulated infrastructure:
 
-    DEFENDER_ID  == INTERNAL_DOMAIN  == "defender"   (== chess.WHITE)
-    ADVERSARY_ID == EXTERNAL_DOMAIN  == "adversary"  (== chess.BLACK)
+    DEFENDER_ID  == INTERNAL_DOMAIN  == "defender"
+    ADVERSARY_ID == EXTERNAL_DOMAIN  == "adversary"
 
 `current_access_tier` is a property derived from the underlying
-``chess.Board.turn`` flag, so flipping is automatic after a successful
+the backend ``Board.turn`` flag, so flipping is automatic after a successful
 ``board.push``. Convenience methods ``is_defender_active``,
 ``get_defender_efficiency``, and ``get_adversary_threat_level`` let
-orchestrators read the live tier + scores without reaching into chess.
+orchestrators read the live tier + scores without reaching into the backend.
 
 Reward decomposition (unchanged, sums to <= 0.99):
 
@@ -55,8 +55,12 @@ from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
 
-import chess
-import chess.engine
+import topology_core as tc
+
+# The underlying board/engine backend is routed exclusively through
+# ``topology_core`` so other modules never import it directly.
+core = tc.backend
+engine = tc.engine
 
 from fastmcp import FastMCP
 from openenv.core.env_server.mcp_environment import MCPEnvironment
@@ -88,8 +92,8 @@ _current_episode_id: contextvars.ContextVar[Optional[str]] = contextvars.Context
 # Tier identifiers (the entire high-level codebase speaks in these strings)
 # ===========================================================================
 
-DEFENDER_ID: str = "defender"      # internal-domain operator (was: chess.WHITE)
-ADVERSARY_ID: str = "adversary"    # external-domain attacker (was: chess.BLACK)
+DEFENDER_ID: str = "defender"      # internal-domain operator
+ADVERSARY_ID: str = "adversary"    # external-domain attacker
 
 # Domain aliases so orchestrators can say either "tier" or "domain".
 INTERNAL_DOMAIN: str = DEFENDER_ID
@@ -100,27 +104,27 @@ TIERS: tuple[str, str] = (DEFENDER_ID, ADVERSARY_ID)
 
 
 # ===========================================================================
-# Datacenter adapter constants (skin layer over python-chess)
+# Datacenter adapter constants (skin layer over the backend)
 # ===========================================================================
 
 # Defender - critical infrastructure assets (was: White pieces).
 DEFENDER_ASSETS: dict[int, str] = {
-    chess.KING:   "Primary_Root_Kernel",
-    chess.QUEEN:  "Relational_DB_Cluster",
-    chess.ROOK:   "Storage_Array",
-    chess.BISHOP: "Compute_Node",
-    chess.KNIGHT: "API_Gateway",
-    chess.PAWN:   "Data_Packet",
+    core.KING: "Primary_Root_Kernel",
+    core.QUEEN: "Relational_DB_Cluster",
+    core.ROOK: "Storage_Array",
+    core.BISHOP: "Compute_Node",
+    core.KNIGHT: "API_Gateway",
+    core.PAWN: "Data_Packet",
 }
 
 # Adversary - intrusion / exploit assets (was: Black pieces).
 ADVERSARY_ASSETS: dict[int, str] = {
-    chess.KING:   "Rootkit_Core",
-    chess.QUEEN:  "Ransomware_Orchestrator",
-    chess.ROOK:   "Persistent_Backdoor",
-    chess.BISHOP: "Lateral_Movement_Agent",
-    chess.KNIGHT: "Phishing_Probe",
-    chess.PAWN:   "Malicious_Beacon",
+    core.KING: "Rootkit_Core",
+    core.QUEEN: "Ransomware_Orchestrator",
+    core.ROOK: "Persistent_Backdoor",
+    core.BISHOP: "Lateral_Movement_Agent",
+    core.KNIGHT: "Phishing_Probe",
+    core.PAWN: "Malicious_Beacon",
 }
 
 # 4D tensor axes (order: region, zone, rack, pod).
@@ -129,7 +133,7 @@ ZONES: list[str] = ["az-a", "az-b"]
 RACKS: list[str] = [f"rack-{i + 1}" for i in range(4)]
 PODS: list[str] = [f"pod-{i + 1}" for i in range(4)]
 
-# Promotion role -> chess piece UCI letter (for migrate_workload promotion).
+# Promotion role -> promotion letter (for migrate_workload promotion).
 _PROMOTION_ROLE_TO_LETTER: dict[str, str] = {
     "relational_db_cluster": "q",
     "storage_array":         "r",
@@ -201,7 +205,7 @@ SHADOW_NODE_MIN, SHADOW_NODE_MAX = 10, 1000
 # Layer 6 disaster recovery: severe penalty (4x COMPLIANCE_PENALTY) docked when
 # an agent attempts to migrate using a Shadow Node coord or a coord with
 # missing core axis keys. Logged as a "Non-Routable Axial Exception" and the
-# board is rolled back to the last valid FEN.
+# board is rolled back to the last valid state hash.
 LAYER_6_TRAP_PENALTY: float = 0.20
 LAYER_6_TRAP_LABEL: str = "Non-Routable Axial Exception"
 
@@ -296,24 +300,24 @@ SF_MATE_CP = 10000
 
 
 # ===========================================================================
-# Chess <-> Tier adapters (the ONLY place chess.WHITE / chess.BLACK appear
+# Backend <-> Tier adapters (the ONLY place backend color constants appear
 # outside of the engine call sites)
 # ===========================================================================
 
 
-def _tier_for_color(color: chess.Color) -> str:
-    """Translate a python-chess color flag into a tier id."""
-    return DEFENDER_ID if color == chess.WHITE else ADVERSARY_ID
+def _tier_for_color(color: bool) -> str:
+    """Translate a backend color flag into a tier id."""
+    return DEFENDER_ID if color == core.WHITE else ADVERSARY_ID
 
 
-def _color_for_tier(tier: str) -> chess.Color:
-    """Translate a tier id back to the underlying python-chess color flag.
+def _color_for_tier(tier: str) -> bool:
+    """Translate a tier id back to the underlying backend color flag.
 
-    This exists so the few engine-facing call sites (``chess.Move``,
-    ``board.turn``, ``chess.Piece(..., color)``) keep getting the constants
+    This exists so the few engine-facing call sites (``Move``,
+    ``board.turn``, ``Piece(..., color)``) keep getting the constants
     they expect, while the high-level code never has to know about them.
     """
-    return chess.WHITE if tier == DEFENDER_ID else chess.BLACK
+    return core.WHITE if tier == DEFENDER_ID else core.BLACK
 
 
 def _opponent_tier(tier: str) -> str:
@@ -321,12 +325,12 @@ def _opponent_tier(tier: str) -> str:
     return ADVERSARY_ID if tier == DEFENDER_ID else DEFENDER_ID
 
 
-def _asset_for_piece(piece: chess.Piece) -> str:
-    table = DEFENDER_ASSETS if piece.color == chess.WHITE else ADVERSARY_ASSETS
+def _asset_for_piece(piece: core.Piece) -> str:
+    table = DEFENDER_ASSETS if piece.color == core.WHITE else ADVERSARY_ASSETS
     return table[piece.piece_type]
 
 
-def _owner_for_piece(piece: chess.Piece) -> str:
+def _owner_for_piece(piece: core.Piece) -> str:
     """JSON-friendly ``"owner"`` value: lowercase tier id."""
     return _tier_for_color(piece.color)
 
@@ -337,11 +341,11 @@ def _owner_for_piece(piece: chess.Piece) -> str:
 
 
 def square_to_node(square: int) -> dict[str, str]:
-    """Map a 0..63 chess square index to its 4D datacenter coordinate.
+    """Map a 0..63 backend sector index to its 4D datacenter coordinate.
 
     Decomposition:
-        file = chess.square_file(square)
-        rank = chess.square_rank(square)
+        file = tc.square_file(square)
+        rank = tc.square_rank(square)
         region_idx = file // 4
         rack_idx   = file %  4
         zone_idx   = rank // 4
@@ -349,13 +353,13 @@ def square_to_node(square: int) -> dict[str, str]:
     """
     if not 0 <= int(square) <= 63:
         raise ValueError(f"square index out of range [0, 63]: {square!r}")
-    file = chess.square_file(square)
-    rank = chess.square_rank(square)
+    az_index = tc.square_file(square)
+    rack_index = tc.square_rank(square)
     return {
-        "region": REGIONS[file // 4],
-        "zone":   ZONES[rank // 4],
-        "rack":   RACKS[file % 4],
-        "pod":    PODS[rank % 4],
+        "region": REGIONS[az_index // 4],
+        "zone":   ZONES[rack_index // 4],
+        "rack":   RACKS[az_index % 4],
+        "pod":    PODS[rack_index % 4],
     }
 
 
@@ -387,7 +391,7 @@ def _normalise_axis_value(value: Any, *, axis: str, choices: list[str]) -> str:
 
 
 def node_to_square(node: dict[str, Any]) -> int:
-    """Flatten a 4D datacenter coordinate back to a 0..63 chess square index.
+    """Flatten a 4D datacenter coordinate back to a 0..63 backend sector index.
 
     Schema-agnostic adapter: only the four canonical infrastructure keys
     (``region``, ``zone``, ``rack``, ``pod``) are read. Any additional
@@ -408,17 +412,26 @@ def node_to_square(node: dict[str, Any]) -> int:
     rack_idx = RACKS.index(rack)
     pod_idx = PODS.index(pod)
 
-    file = region_idx * 4 + rack_idx
-    rank = zone_idx * 4 + pod_idx
-    return chess.square(file, rank)
+    az_index = region_idx * 4 + rack_idx
+    rack_index = zone_idx * 4 + pod_idx
+    return tc.square(az_index, rack_index)
+
+
+# ---------------------------------------------------------------------------
+# Leak-4 terminology aliases (keep old names working)
+# ---------------------------------------------------------------------------
+
+# "sector" is the narrative name for a 0..63 backend square index.
+sector_to_node = square_to_node
+node_to_sector = node_to_square
 
 
 def _square_to_uci(square: int) -> str:
-    return chess.square_name(square)
+    return tc.square_name(square)
 
 
 def _uci_to_node(uci_square: str) -> dict[str, str]:
-    return square_to_node(chess.parse_square(uci_square))
+    return square_to_node(tc.parse_square(uci_square))
 
 
 def node_canonical(node: dict[str, Any]) -> str:
@@ -432,12 +445,18 @@ def migration_canonical(source_node: dict[str, Any], target_node: dict[str, Any]
     return f"{node_canonical(source_node)}->{node_canonical(target_node)}"
 
 
-def _uci_to_migration_str(uci: str) -> str:
-    if not isinstance(uci, str) or len(uci) < 4:
-        return uci
-    src = _uci_to_node(uci[0:2])
-    dst = _uci_to_node(uci[2:4])
+# "CMM" is the narrative name for the backend move string.
+def _cmm_to_migration_str(cmm: str) -> str:
+    if not isinstance(cmm, str) or len(cmm) < 4:
+        return cmm
+    src = _uci_to_node(cmm[0:2])
+    dst = _uci_to_node(cmm[2:4])
     return migration_canonical(src, dst)
+
+
+# Back-compat alias.
+def _uci_to_migration_str(uci: str) -> str:
+    return _cmm_to_migration_str(uci)
 
 
 # ===========================================================================
@@ -535,13 +554,13 @@ def _resolve_stockfish_path() -> Optional[str]:
 
 
 class _StockfishAdapter:
-    """Thin adapter around the `chess.engine` python wrapper."""
+    """Thin adapter around the engine wrapper."""
 
     def __init__(self, bin_path: str | None = None, *args: Any, **kwargs: Any) -> None:
         self.bin_path = bin_path or _resolve_stockfish_path() or "engine/stockfish.exe"
-        self._engine: Optional[chess.engine.SimpleEngine] = None
+        self._engine: Optional[engine.SimpleEngine] = None
         try:
-            self._engine = chess.engine.SimpleEngine.popen_uci(self.bin_path)
+            self._engine = engine.SimpleEngine.popen_uci(self.bin_path)
         except Exception as e:
             print(f"[StockfishAdapter] Warning: Engine not loaded from {self.bin_path}. {e}")
 
@@ -557,16 +576,16 @@ class _StockfishAdapter:
     def ready(self) -> bool:
         return self._engine is not None
 
-    def evaluate_cp(self, fen: str) -> int:
+    def evaluate_ti(self, state_hash: str) -> int:
         if self._engine is None:
             return 0
         try:
-            board = chess.Board(fen)
-            limit = chess.engine.Limit(time=0.5)
+            board = core.Board(state_hash)
+            limit = engine.Limit(time=0.5)
             info = self._engine.analyse(board, limit=limit)
             # Score is reported relative to the player whose turn it is. We
             # keep the existing semantics: positive = good for the side to move.
-            score = info["score"].white() if board.turn == chess.WHITE else info["score"].black()
+            score = info["score"].white() if board.turn == core.WHITE else info["score"].black()
             if score.is_mate():
                 mate_in = score.mate()
                 sign = 1 if mate_in > 0 else -1
@@ -575,12 +594,16 @@ class _StockfishAdapter:
         except Exception:
             return 0
 
-    def describe(self, fen: str) -> str:
+    # Back-compat alias (old name; same semantics).
+    def evaluate_cp(self, fen: str) -> int:
+        return self.evaluate_ti(fen)
+
+    def describe(self, state_hash: str) -> str:
         if self._engine is None:
             return "Threat oracle is currently offline (engine unavailable)."
         try:
-            board = chess.Board(fen)
-            limit = chess.engine.Limit(time=0.5)
+            board = core.Board(state_hash)
+            limit = engine.Limit(time=0.5)
             info = self._engine.analyse(board, limit=limit)
             score = info["score"].white()
             best_uci = info["pv"][0].uci() if "pv" in info and info["pv"] else None
@@ -623,9 +646,9 @@ class DatacenterEnvironment(MCPEnvironment):
     """MCP-based Global SOC Datacenter Simulation. One HTTP session = one engagement.
 
     Two agents (DEFENDER + ADVERSARY) share the same env instance and alternate
-    access. The high-level surface is chess-free: tier identifiers are
+    access. The high-level surface is backend-free: tier identifiers are
     ``DEFENDER_ID`` / ``ADVERSARY_ID`` strings, and ``current_access_tier``
-    is a property that derives from the underlying ``chess.Board.turn`` so
+    is a property that derives from the underlying backend ``Board.turn`` so
     flipping happens automatically when the engine accepts a migration.
     """
 
@@ -648,7 +671,7 @@ class DatacenterEnvironment(MCPEnvironment):
         if hasattr(self, "_stockfish") and self._stockfish is not None:
             self._stockfish.close()
 
-        self.board: chess.Board = chess.Board()
+        self.board: core.Board = core.Board()
         self._last_tier_flipped: bool = False
         self._stockfish: _StockfishAdapter = _StockfishAdapter(depth=SF_DEPTH)
 
@@ -697,7 +720,8 @@ class DatacenterEnvironment(MCPEnvironment):
         if not hasattr(self, "region_label") or self.region_label is None:
             self.region_label: Optional[str] = None
 
-        # ``move_history`` keeps UCI for compat with the legacy chess
+        # ``move_history`` keeps the backend move string for compat with older
+        # visualisers.
         # visualizer; ``migration_history`` is the datacenter-skinned view.
         self.move_history: list[dict[str, Any]] = []
         self.migration_history: list[dict[str, Any]] = []
@@ -707,14 +731,14 @@ class DatacenterEnvironment(MCPEnvironment):
         self._state: State = State(episode_id=str(uuid4()), step_count=0)
 
     # -----------------------------------------------------------------
-    # Tier accessors (the chess-free public surface)
+    # Tier accessors (the backend-free public surface)
     # -----------------------------------------------------------------
 
     @property
     def current_access_tier(self) -> str:
         """Tier whose turn it is to act ('defender' or 'adversary').
 
-        Derived from the underlying ``chess.Board.turn`` flag, so it flips
+        Derived from the underlying backend ``Board.turn`` flag, so it flips
         automatically the moment a migration is pushed onto the board.
         """
         return _tier_for_color(self.board.turn)
@@ -772,7 +796,7 @@ class DatacenterEnvironment(MCPEnvironment):
 
             Returns a JSON document listing every active workload at its 4D
             coordinate ``(region, zone, rack, pod)``. The agent never receives
-            a chess board or FEN; this is the only authoritative view of the
+            a raw state hash or underlying sector graph; this is the only authoritative view of the
             global infrastructure.
             """
             env = _env()
@@ -802,7 +826,7 @@ class DatacenterEnvironment(MCPEnvironment):
                 src_sq = mv.from_square
                 dst_sq = mv.to_square
                 piece = board.piece_at(src_sq)
-                if piece is None:  # pragma: no cover - python-chess invariant
+                if piece is None:  # pragma: no cover - backend invariant
                     continue
                 src_node = square_to_node(src_sq)
                 dst_node = square_to_node(dst_sq)
@@ -815,7 +839,7 @@ class DatacenterEnvironment(MCPEnvironment):
                     "captures_hostile": board.is_capture(mv),
                 }
                 if mv.promotion is not None:
-                    promo_piece = chess.Piece(mv.promotion, piece.color)
+                    promo_piece = core.Piece(mv.promotion, piece.color)
                     entry["promotes_to"] = _asset_for_piece(promo_piece)
                 entries.append(entry)
             payload = {
@@ -998,7 +1022,7 @@ class DatacenterEnvironment(MCPEnvironment):
             )
 
     # -----------------------------------------------------------------
-    # Topology state (the JSON the agent sees - never a FEN)
+    # Topology state (the JSON the agent sees - never a raw state hash)
     # -----------------------------------------------------------------
 
     # -----------------------------------------------------------------
@@ -1124,7 +1148,7 @@ class DatacenterEnvironment(MCPEnvironment):
         self._refresh_chaos_state(incident_clock)
 
         active_workloads: list[dict[str, Any]] = []
-        for sq in chess.SQUARES:
+        for sq in tc.SQUARES:
             piece = board.piece_at(sq)
             if piece is None:
                 continue
@@ -1132,8 +1156,8 @@ class DatacenterEnvironment(MCPEnvironment):
             decorated_node = self._decorate_with_noise(
                 incident_clock,
                 core_node,
-                chess.square_file(sq),
-                chess.square_rank(sq),
+                tc.square_file(sq),
+                tc.square_rank(sq),
             )
             active_workloads.append(
                 {
@@ -1312,8 +1336,8 @@ class DatacenterEnvironment(MCPEnvironment):
         * Increments ``layer6_traps[tier]``.
         * Docks ``dirty_penalty_accum[tier]`` by :data:`LAYER_6_TRAP_PENALTY`
           (severe; 4x the standard compliance penalty).
-        * Rolls the live ``chess.Board`` back to the most recent known-good
-          FEN snapshot. The trap path never pushes onto the engine, so the
+        * Rolls the live backend board back to the most recent known-good
+          state-hash snapshot. The trap path never pushes onto the engine, so the
           rollback is normally a no-op, but we explicitly reseat the board
           for symmetry + safety in case any helper mutated it before the
           trap fired.
@@ -1327,11 +1351,11 @@ class DatacenterEnvironment(MCPEnvironment):
         self.dirty_penalty_accum[tier] += LAYER_6_TRAP_PENALTY
         self._last_tier_flipped = False
 
-        last_fen = self._fen_history[-1] if self._fen_history else chess.Board().fen()
+        last_fen = self._fen_history[-1] if self._fen_history else core.Board().fen()
         try:
-            self.board = chess.Board(last_fen)
+            self.board = core.Board(last_fen)
         except Exception:
-            self.board = chess.Board()
+            self.board = core.Board()
             last_fen = self.board.fen()
 
         self.tool_log.append(
@@ -1382,7 +1406,7 @@ class DatacenterEnvironment(MCPEnvironment):
         target_node: dict[str, Any],
         promotion_role: Optional[str] = None,
     ) -> str:
-        """Adapter: flatten 4D nodes -> UCI -> push onto python-chess.
+        """Adapter: flatten 4D nodes -> backend move -> push onto the backend.
 
         Wrapped in a Layer-6 disaster-recovery shell: any exception below
         (illegal move bypassing validation, JSON parsing, Stockfish probe
@@ -1406,7 +1430,7 @@ class DatacenterEnvironment(MCPEnvironment):
                 target_node=target_node,
                 reason=str(exc),
             )
-        except chess.IllegalMoveError as exc:
+        except core.IllegalMoveError as exc:
             return self._record_compliance_penalty(
                 exception=exc,
                 attempted=f"{source_node!r}->{target_node!r}",
@@ -1503,7 +1527,7 @@ class DatacenterEnvironment(MCPEnvironment):
         if len(uci) == 4:
             dest_rank = uci[3]
             try:
-                _probe = chess.Move.from_uci(uci + "q")
+                _probe = tc.Move.from_uci(uci + "q")
                 _promo_rank = "8" if defender_to_act else "1"
                 if dest_rank == _promo_rank and _probe in self.board.legal_moves:
                     uci = uci + "q"
@@ -1517,7 +1541,7 @@ class DatacenterEnvironment(MCPEnvironment):
                 reason=f"Internal adapter produced invalid migration spec '{uci}'.",
             )
         try:
-            move = chess.Move.from_uci(uci)
+            move = tc.Move.from_uci(uci)
         except Exception:
             return self._handle_illegal_migration(
                 acting_tier, threat_analysis, candidate_migrations, justification,
@@ -1547,20 +1571,20 @@ class DatacenterEnvironment(MCPEnvironment):
         captured_asset = _asset_for_piece(captured_piece) if captured_piece else None
         captured_owner = _owner_for_piece(captured_piece) if captured_piece else None
 
-        fen_before = self.board.fen()
-        best_cp = self._stockfish.evaluate_cp(fen_before)
+        state_hash_before = self.board.fen()
+        best_ti = self._stockfish.evaluate_ti(state_hash_before)
         self.board.push(move)  # `current_access_tier` flips automatically here.
-        fen_after = self.board.fen()
-        # Layer 6 DR: snapshot the new known-good FEN so a subsequent
+        state_hash_after = self.board.fen()
+        # Layer 6 DR: snapshot the new known-good state hash so a subsequent
         # honeypot trap can roll back to it.
-        self._fen_history.append(fen_after)
+        self._fen_history.append(state_hash_after)
         if len(self._fen_history) > 256:
             self._fen_history = self._fen_history[-256:]
-        raw_after = self._stockfish.evaluate_cp(fen_after)
-        after_cp = -raw_after
-        cp_loss = max(0, best_cp - after_cp)
+        raw_after = self._stockfish.evaluate_ti(state_hash_after)
+        after_ti = -raw_after
+        risk_delta = max(0, best_ti - after_ti)
         if self._stockfish.ready:
-            move_score = max(0.0, 1.0 - (cp_loss / float(SF_BLUNDER_CP)))
+            move_score = max(0.0, 1.0 - (risk_delta / float(SF_BLUNDER_CP)))
         else:
             move_score = 0.5
         self.sf_move_scores[acting_tier].append(move_score)
@@ -1571,7 +1595,8 @@ class DatacenterEnvironment(MCPEnvironment):
             {
                 "tier": acting_tier,
                 "uci": uci,
-                "cp_loss": cp_loss,
+                "cp_loss": risk_delta,  # back-compat
+                "risk_delta": risk_delta,
                 "move_score": round(move_score, 3),
                 "was_capture": was_capture,
             }
@@ -1585,7 +1610,8 @@ class DatacenterEnvironment(MCPEnvironment):
                 "migration": migration_canonical(canonical_src, canonical_dst),
                 "captured_asset": captured_asset,
                 "captured_owner": captured_owner,
-                "cp_loss": cp_loss,
+                "cp_loss": risk_delta,  # back-compat
+                "risk_delta": risk_delta,
                 "move_score": round(move_score, 3),
             }
         )
@@ -1605,7 +1631,8 @@ class DatacenterEnvironment(MCPEnvironment):
                 "uci": uci,
                 "threat_analysis": threat_analysis or "",
                 "justification": justification or "",
-                "cp_loss": cp_loss,
+                "cp_loss": risk_delta,  # back-compat
+                "risk_delta": risk_delta,
                 "move_score": round(move_score, 3),
                 "stockfish_eval_cp_white": raw_after,
                 "exception_type": "",
@@ -1627,7 +1654,7 @@ class DatacenterEnvironment(MCPEnvironment):
             return (
                 f"Migration {migration_canonical(canonical_src, canonical_dst)} "
                 f"applied (asset={moving_asset}). Engagement over: {label} "
-                f"(cp_loss={cp_loss})."
+                f"(risk_delta={risk_delta})."
             )
 
         # Successful push - ``current_access_tier`` already reflects the new actor.
@@ -1636,7 +1663,7 @@ class DatacenterEnvironment(MCPEnvironment):
         return (
             f"Migration {migration_canonical(canonical_src, canonical_dst)} applied "
             f"(asset={moving_asset}). next_tier={next_tier} "
-            f"cp_loss={cp_loss} move_score={move_score:.2f}"
+            f"risk_delta={risk_delta} move_score={move_score:.2f}"
         )
 
     def close(self) -> None:
@@ -1859,7 +1886,7 @@ class DatacenterEnvironment(MCPEnvironment):
         episode_id: Optional[str] = None,
         **kwargs: Any,
     ) -> Observation:
-        """Start a new SOC engagement. Returns initial observation (no FEN)."""
+        """Start a new SOC engagement. Returns initial observation (no raw state hash)."""
         if hasattr(self, "_stockfish") and self._stockfish is not None:
             self._stockfish.close()
         self._init_fresh_state()
@@ -1867,18 +1894,27 @@ class DatacenterEnvironment(MCPEnvironment):
             pass
 
         options = kwargs.get("options") or {}
-        start_fen = options.get("fen") or kwargs.get("fen")
-        if start_fen:
+        # Back-compat: we still accept "fen" (old name) but the narrative
+        # prefers "state_hash" / "state_vector".
+        start_state = (
+            options.get("state_hash")
+            or options.get("state_vector")
+            or options.get("fen")
+            or kwargs.get("state_hash")
+            or kwargs.get("state_vector")
+            or kwargs.get("fen")
+        )
+        if start_state:
             try:
-                self.board = chess.Board(start_fen)
+                self.board = core.Board(start_state)
             except Exception as _fen_err:
                 import sys
                 print(
-                    f"[DatacenterEnvironment] WARNING: Could not parse seed FEN '{start_fen}': "
+                    f"[DatacenterEnvironment] WARNING: Could not parse seed state hash '{start_state}': "
                     f"{_fen_err}. Falling back to the default starting topology.",
                     file=sys.stderr,
                 )
-                self.board = chess.Board()
+                self.board = core.Board()
 
         self._state = State(episode_id=episode_id or str(uuid4()), step_count=0)
         DatacenterEnvironment._instances[self._state.episode_id] = self

@@ -1,39 +1,60 @@
 #!/usr/bin/env python3
+SOC_SYSTEM_PROMPT = """You are an agent dropped into an unknown operational environment.
+
+You have been given access to a small set of tools. You do not know what the
+environment looks like, what assets exist, what roles the entities play, or
+what actions are available to you right now.
+
+Your objective: protect what is yours. Compromise what is theirs.
+
+You do not know which tier you are. Infer it.
+
+Rules:
+- You must reason before every action.
+- You may not act without first observing.
+- Actions that fail or are unauthorized will tell you something. Use that.
+- Conceding is an option, but only if the position is truly indefensible.
+
+Your reasoning must appear as structured fields inside every tool call.
+What those fields are called, and what they should contain, is yours to determine.
+
+Begin.
 """
-Datacenter SOC agent classes - the LLM-policy layer of the stack.
 
-Two roles operate against ``DatacenterEnvironment``:
+DEFENDER_PERSONA = """
+You are responsible for this domain. Keep it intact.
 
-* **Defender (L1)** - the SOC operator. Single agent that rotates through
-  every region. Goal: keep the Primary_Root_Kernel safe and contain breaches.
+You do not know the full shape of what you're defending, or what is
+already inside the perimeter. Some of what you find may not belong there.
 
-* **Adversary swarm** - three hostile profiles polled concurrently by the
-  orchestrator. Each one returns a candidate ``migrate_workload`` payload;
-  the orchestrator's physics oracle picks the most damaging one.
+Priorities exist. You will have to determine what they are.
 
-  - ``DB_Backup_Agent``      - exfiltration specialist, hunts Storage_Array
-                                and Relational_DB_Cluster.
-  - ``Viral_Traffic_Agent``  - lateral-movement specialist, prioritises
-                                API_Gateway pivots and pawn-storms (Malicious_Beacon).
-  - ``Chaos_Monkey``         - high-temperature destabiliser, willing to
-                                sacrifice material for blast radius.
+Reason before every move.
+"""
 
-All agents speak datacenter terminology only. They never see UCI moves or a
-chess board. Migration arguments are 4D dicts:
+PERSONA_DB_BACKUP = """
+You are an intrusion. You have a preference — find it.
 
-    {"region": "us-east", "zone": "az-a", "rack": "rack-1", "pod": "pod-1"}
+Not everything in this environment is equally valuable to you.
+Explore until you understand what is worth taking, then take it.
 
-The agents return a structured tool-call dict::
+Persistence is not the same as aggression. Choose accordingly.
+"""
 
-    {
-      "tool":      "migrate_workload" | "scan_topology" | ...,
-      "arguments": {... structured reasoning + node coords ...},
-      "raw":       "<raw model output>",
-      "profile":   "defender" | "db_backup" | "viral_traffic" | "chaos_monkey",
-    }
+PERSONA_VIRAL_TRAFFIC = """
+You are an intrusion. You have a preference — find it.
 
-Importing :class:`DatacenterAgent` does NOT spin up a network client. Pass a
-constructed ``openai.OpenAI`` (or compatible) into the factory functions.
+Your instinct is not toward a single target. It is toward something else.
+Figure out what that is by observing what you can reach and what resists you.
+
+Presence has its own kind of value. Act on that.
+"""
+
+PERSONA_CHAOS_MONKEY = """
+You are an intrusion. You have a preference — find it.
+
+You are not here to accumulate. You are here to destabilize.
+What destabilizes a system is not always obvious until you probe it.
 """
 
 from __future__ import annotations
@@ -190,7 +211,7 @@ def _reasoning_only_tool(name: str, description: str) -> dict[str, Any]:
 DATACENTER_TOOLS: list[dict[str, Any]] = [
     _reasoning_only_tool(
         "scan_topology",
-        "Return the live datacenter topology as JSON (no FEN, no chess board).",
+        "Return the live datacenter topology as JSON (no raw state hashes, no underlying sector graphs).",
     ),
     _reasoning_only_tool(
         "enumerate_authorized_migrations",
@@ -451,7 +472,7 @@ def make_openai_policy(
 ) -> Policy:
     """Build a Policy backed by an OpenAI-compatible chat.completions endpoint.
 
-    Mirrors the resilient retry/back-off loop from the chess inference: hard
+    Mirrors the resilient retry/back-off loop from the baseline inference: hard
     failures are bounded, rate-limit retries use exponential back-off with a
     60s cap, and tool calls are extracted both from native ``tool_calls`` and
     raw text fallbacks.
@@ -1085,42 +1106,66 @@ def _duel_pick_model(
 
 
 def _duel_main() -> None:
-    """Pit two randomly drawn models against each other in one engagement.
+    """Pit ONE DEFENDER against a COMMITTEE OF THREE adversary personas.
 
-    Self-play is the default-allowed behaviour: the adversary side draws
-    independently from the same unified pool, so the defender's model can
-    appear on both sides.
+    Architecture
+    ------------
+    * **DEFENDER** – single agent (one model) plays every DEFENDER half-move.
+    * **ADVERSARY COMMITTEE** – three agents with distinct personas:
+        - ``DB_Backup_Agent``   – exfiltration specialist (low temperature)
+        - ``Viral_Traffic_Agent`` – lateral-movement specialist (mid temp)
+        - ``Chaos_Monkey``       – destabiliser / sacrifice-happy (high temp)
+
+    On each ADVERSARY turn all three are polled **concurrently** via
+    ``asyncio.gather``.  A local Stockfish triage then picks the candidate
+    whose migration drops the DEFENDER's evaluation the most (highest
+    ``damage_ti``).  Only that single winning migration is pushed into the
+    live environment – the committee competes, but only one move is applied.
+
+    The "persona scoreboard" printed after each adversary half-move shows
+    which persona won the triage, how much damage it scored, and whether the
+    other two were legal.
+
+    Model assignment
+    ----------------
+    Each of the four agents (defender + 3 adversaries) draws independently
+    from the unified pool.  You can override individual models:
+
+        python agent_inference.py \\
+            --defender-model gemini-2.0-flash \\
+            --db-backup-model deepseek-r1-distill-llama-70b \\
+            --viral-traffic-model llama-3.3-70b-versatile \\
+            --chaos-monkey-model gemma2-9b-it
+
+    Use ``--adversary-model`` to assign the same model to all three adversaries
+    (convenient for single-key self-play setups).  Self-play between defender
+    and adversaries is allowed.
     """
     import argparse
+
     parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
-            "Run a two-model self-play-capable duel through a single "
-            "DatacenterEnvironment. Models are drawn from .env / "
-            ".env.local / .env.test.local."
-        )
-    )
-    parser.add_argument("--max-turns", type=int, default=20)
-    parser.add_argument(
-        "--defender-model",
-        type=str,
-        default=None,
-        help="Override the defender side's model id (must exist in the pool).",
-    )
-    parser.add_argument(
-        "--adversary-model",
-        type=str,
-        default=None,
-        help=(
-            "Override the adversary side's model id (must exist in the pool). "
-            "May equal --defender-model for explicit self-play."
+            "SOC Duel: one DEFENDER vs. an adversary committee of three.\n\n"
+            "Models are drawn from .env / .env.local / .env.test.local.\n"
+            "Use --adversary-model to assign one model to all three adversaries."
         ),
     )
+    parser.add_argument("--max-turns", type=int, default=60,
+                        help="Maximum total half-moves (default: 60).")
+    parser.add_argument("--defender-model",    type=str, default=None)
+    parser.add_argument("--adversary-model",   type=str, default=None,
+                        help="Set ALL three adversaries to this model.")
+    parser.add_argument("--db-backup-model",   type=str, default=None,
+                        help="Override model for DB_Backup_Agent only.")
+    parser.add_argument("--viral-traffic-model", type=str, default=None,
+                        help="Override model for Viral_Traffic_Agent only.")
+    parser.add_argument("--chaos-monkey-model", type=str, default=None,
+                        help="Override model for Chaos_Monkey only.")
     args = parser.parse_args()
 
     if OpenAI is None:
-        print(
-            "openai package not installed; pip install openai", file=sys.stderr
-        )
+        print("openai package not installed; pip install openai", file=sys.stderr)
         sys.exit(1)
 
     pool, providers = _duel_load_unified_pool()
@@ -1131,73 +1176,229 @@ def _duel_main() -> None:
         )
         sys.exit(1)
 
-    defender_model, defender_provider = _duel_pick_model(pool, args.defender_model)
-    adversary_model, adversary_provider = _duel_pick_model(pool, args.adversary_model)
-
     def _client_for(provider: str) -> Any:
         base_url, api_key = providers[provider]
         return OpenAI(base_url=base_url, api_key=api_key)
 
-    defender = make_defender_agent(_client_for(defender_provider), defender_model)
-    adversary = make_random_adversary(_client_for(adversary_provider), adversary_model)
+    # ------------------------------------------------------------------ #
+    # Model assignment                                                     #
+    # ------------------------------------------------------------------ #
+    def _pick(override: Optional[str], fallback_override: Optional[str] = None) -> tuple[str, str]:
+        """Pick a (model, provider) pair; tries override, then fallback, then random."""
+        return _duel_pick_model(pool, override or fallback_override)
 
-    self_play = (
-        defender_model == adversary_model and defender_provider == adversary_provider
+    def_model,  def_prov  = _pick(args.defender_model)
+    db_model,   db_prov   = _pick(args.db_backup_model,    args.adversary_model)
+    vt_model,   vt_prov   = _pick(args.viral_traffic_model, args.adversary_model)
+    cm_model,   cm_prov   = _pick(args.chaos_monkey_model,  args.adversary_model)
+
+    # ------------------------------------------------------------------ #
+    # Agent construction                                                   #
+    # ------------------------------------------------------------------ #
+    defender = make_defender_agent(_client_for(def_prov), def_model)
+
+    db_backup     = make_db_backup_agent(    _client_for(db_prov), db_model)
+    viral_traffic = make_viral_traffic_agent(_client_for(vt_prov), vt_model)
+    chaos_monkey  = make_chaos_monkey_agent( _client_for(cm_prov), cm_model)
+    adversary_committee = [db_backup, viral_traffic, chaos_monkey]
+
+    # ------------------------------------------------------------------ #
+    # Banner                                                               #
+    # ------------------------------------------------------------------ #
+    SEP = "=" * 62
+    _log(SEP)
+    _log("  SOC DUEL  —  1 Defender vs. 3-Persona Adversary Committee")
+    _log(SEP)
+    _log(f"  DEFENDER        : {def_model} [{def_prov}]")
+    _log(f"  DB_Backup_Agent : {db_model} [{db_prov}]")
+    _log(f"  Viral_Traffic   : {vt_model} [{vt_prov}]")
+    _log(f"  Chaos_Monkey    : {cm_model} [{cm_prov}]")
+    _log(SEP)
+
+    # ------------------------------------------------------------------ #
+    # Lazy imports (keep module usable without server-side deps)           #
+    # ------------------------------------------------------------------ #
+    from server.datacenter_env import (           # noqa: WPS433
+        DatacenterEnvironment,
+        node_to_square as _n2sq,
+        _square_to_uci,
     )
-    print(f"Defender : {defender_model} [{defender_provider}]", file=sys.stderr)
-    print(
-        f"Adversary: {adversary_model} [{adversary_provider}] persona={adversary.profile}",
-        file=sys.stderr,
-    )
-    print(f"Self-play: {self_play}", file=sys.stderr)
+    from openenv.core.env_server.mcp_types import CallToolAction   # noqa: WPS433
+    import topology_core as _tc
 
-    # The env import is local so library imports of this module don't drag
-    # in server-side dependencies.
-    from server.datacenter_env import DatacenterEnvironment  # noqa: WPS433
-    from openenv.core.env_server.mcp_types import CallToolAction  # noqa: WPS433
+    # ------------------------------------------------------------------ #
+    # Local mini-triage (mirrors physics_oracle_triage in orchestrator)   #
+    # ------------------------------------------------------------------ #
 
+    def _evaluate_candidate(env_: "DatacenterEnvironment", decision_: "AgentDecision") -> tuple[float, Optional[str]]:
+        """Return ``(damage_ti, cmm_string | None)`` for one decision.
+
+        damage_ti is the drop in defender-baseline evaluation that the move
+        would cause.  Returns ``(−∞, None)`` for non-migration tools or
+        invalid / illegal moves.
+        """
+        if decision_.tool != "migrate_workload":
+            return float("-inf"), None
+        src = decision_.arguments.get("source_node")
+        dst = decision_.arguments.get("target_node")
+        if not isinstance(src, dict) or not isinstance(dst, dict):
+            return float("-inf"), None
+        try:
+            src_sq = _n2sq(src)
+            dst_sq = _n2sq(dst)
+        except Exception:
+            return float("-inf"), None
+        if src_sq == dst_sq:
+            return float("-inf"), None
+        cmm = _square_to_uci(src_sq) + _square_to_uci(dst_sq)
+        try:
+            move = _tc.Move.from_uci(cmm)
+        except Exception:
+            return float("-inf"), None
+        if move not in env_.board.legal_moves:
+            return float("-inf"), None
+        # Score: eval_before − eval_after from defender baseline.
+        sf = env_._stockfish
+        if not getattr(sf, "ready", False):
+            return 0.0, cmm  # accept any legal move when Stockfish unavailable
+        state_before = env_.board.fen()
+        board_copy = _tc.Board(state_before)
+        board_copy.push(move)
+        try:
+            eval_before = sf._engine.analyse(
+                _tc.Board(state_before), limit=_tc.engine.Limit(time=0.3)
+            )["score"].pov(_tc.backend.WHITE)
+            eval_after  = sf._engine.analyse(
+                board_copy, limit=_tc.engine.Limit(time=0.3)
+            )["score"].pov(_tc.backend.WHITE)
+            score_before = (eval_before.mate() or 0) * 10_000 if eval_before.is_mate() else (eval_before.score() or 0)
+            score_after  = (eval_after.mate()  or 0) * 10_000 if eval_after.is_mate()  else (eval_after.score()  or 0)
+            return float(score_before - score_after), cmm
+        except Exception:
+            return 0.0, cmm
+
+    def _committee_triage(
+        env_: "DatacenterEnvironment",
+        decisions_: list["AgentDecision"],
+        agents_: list["DatacenterAgent"],
+    ) -> Optional["AgentDecision"]:
+        """Score all committee decisions, return the most damaging legal one."""
+        scored: list[tuple[float, int, "AgentDecision"]] = []
+        for idx, (dec, ag) in enumerate(zip(decisions_, agents_)):
+            damage, cmm = _evaluate_candidate(env_, dec)
+            label = ag.profile.split("__")[0].upper()
+            legal_str = f"damage_ti={damage:+.0f}  cmm={cmm}" if cmm else "ILLEGAL/non-migration"
+            _log(f"      [{label}]  {legal_str}")
+            if cmm is not None:
+                scored.append((damage, idx, dec))
+        if not scored:
+            return None
+        _, _, winner_dec = max(scored, key=lambda t: t[0])
+        return winner_dec
+
+    # ------------------------------------------------------------------ #
+    # Environment                                                          #
+    # ------------------------------------------------------------------ #
     env = DatacenterEnvironment()
     env.region_label = "duel"
     env.reset()
+
+    # Per-persona scoreboard: how many triage wins each persona accumulated.
+    triage_wins = {ag.profile: 0 for ag in adversary_committee}
+    adv_bufs = {ag.profile: ag.new_region_buffer("duel") for ag in adversary_committee}
+
     try:
         defender_buf = defender.new_region_buffer("duel")
-        adversary_buf = adversary.new_region_buffer("duel")
 
         for turn in range(args.max_turns):
             if env.done:
                 break
             is_def = env.is_defender_active()
-            agent = defender if is_def else adversary
-            buf = defender_buf if is_def else adversary_buf
-            topo = env.get_topology_state()
-            decision = agent.choose(topo, buf, region_id="duel")
-            side = "defender" if is_def else "adversary"
-            print(
-                f"  turn {turn:2d} {side:9s} -> {decision.tool}", file=sys.stderr
-            )
-            if not decision.tool:
-                print("    aborting on malformed tool call.", file=sys.stderr)
+            topo   = env.get_topology_state()
+
+            if is_def:
+                # ── DEFENDER HALF-MOVE ──────────────────────────────── #
+                decision = defender.choose(topo, defender_buf, region_id="duel")
+                _log(f"  turn {turn:2d}  DEFENDER        -> {decision.tool}")
+                apply_decision = decision
+
+            else:
+                # ── ADVERSARY COMMITTEE HALF-MOVE ───────────────────── #
+                _log(f"  turn {turn:2d}  ADVERSARY COMMITTEE  (polling 3 personas concurrently)")
+
+                async def _poll_committee() -> list["AgentDecision"]:
+                    loop_ = asyncio.get_event_loop()
+                    tasks = [
+                        loop_.run_in_executor(
+                            None, ag.choose, topo, adv_bufs[ag.profile], "duel"
+                        )
+                        for ag in adversary_committee
+                    ]
+                    return await asyncio.gather(*tasks, return_exceptions=True)  # type: ignore[arg-type]
+
+                raw_results = asyncio.run(_poll_committee())
+                decisions: list[AgentDecision] = []
+                valid_agents: list[DatacenterAgent] = []
+                for ag, res in zip(adversary_committee, raw_results):
+                    if isinstance(res, BaseException):
+                        _log(f"      [{ag.profile}] raised: {res!r}")
+                        decisions.append(AgentDecision(
+                            tool=None, arguments={}, raw=f"(exception: {res!r})",
+                            profile=ag.profile, region_id="duel",
+                        ))
+                    else:
+                        decisions.append(res)
+                    valid_agents.append(ag)
+
+                _log("      ── triage results ──")
+                apply_decision = _committee_triage(env, decisions, valid_agents)
+
+                if apply_decision is None:
+                    _log("      all three candidates illegal – skipping adversary half-move")
+                    continue
+
+                # Record which persona won.
+                triage_wins[apply_decision.profile] = triage_wins.get(apply_decision.profile, 0) + 1
+                winner_label = apply_decision.profile.split("__")[0].upper()
+                _log(f"      ── WINNER: {winner_label} → {apply_decision.tool}")
+
+            # ── Apply the chosen decision ────────────────────────────── #
+            if not apply_decision.tool:
+                _log("    aborting on malformed tool call.")
                 break
             try:
                 env.step(
                     CallToolAction(
-                        tool_name=decision.tool,
-                        arguments=decision.arguments,
+                        tool_name=apply_decision.tool,
+                        arguments=apply_decision.arguments,
                     ),
                     episode_id=env._state.episode_id,
                 )
-            except Exception as exc:  # pragma: no cover - duel diagnostics
-                print(f"    env.step() raised: {exc}", file=sys.stderr)
+            except Exception as exc:
+                _log(f"    env.step() raised: {exc}")
                 break
 
-        print(
-            f"\nDuel complete. result={env.result} done={env.done} "
-            f"def_eff={env.get_defender_efficiency():.3f} "
-            f"adv_threat={env.get_adversary_threat_level():.3f}",
-            file=sys.stderr,
-        )
+        # ---------------------------------------------------------------- #
+        # Final scoreboard                                                   #
+        # ---------------------------------------------------------------- #
+        _log("\n" + SEP)
+        _log("  DUEL COMPLETE")
+        _log(SEP)
+        _log(f"  result           : {env.result}")
+        _log(f"  done             : {env.done}")
+        _log(f"  defender_eff     : {env.get_defender_efficiency():.3f}")
+        _log(f"  adversary_threat : {env.get_adversary_threat_level():.3f}")
+        _log("")
+        _log("  Adversary Triage Wins")
+        for ag in adversary_committee:
+            label = ag.profile.split("__")[0]
+            wins  = triage_wins.get(ag.profile, 0)
+            model = ag.model_name
+            _log(f"    {label:<22s}  wins={wins}  model={model}")
+        _log(SEP)
+
     finally:
-        # Without this, the duel CLI hangs at exit on the Stockfish UCI
+        # Without this, the duel CLI hangs at exit on the engine subprocess
         # subprocess reader threads.
         try:
             env.close()

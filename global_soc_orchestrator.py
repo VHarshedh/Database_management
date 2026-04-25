@@ -6,7 +6,7 @@ Architecture
 ------------
 1. **Multi-region simulation** - 3 isolated :class:`DatacenterEnvironment`
    instances, each representing a distinct global region (e.g. us-east,
-   eu-west, ap-south). Each region has its own ``chess.Board`` + Stockfish
+   eu-west, ap-south). Each region has its own backend board + Stockfish
    subprocess, so per-region damage scoring is independent.
 
 2. **Async adversary swarm** - on every ADVERSARY turn, three hostile
@@ -14,19 +14,19 @@ Architecture
    concurrently via :mod:`asyncio` for that region's topology. Each one
    returns a candidate ``migrate_workload`` payload.
 
-3. **Physics oracle (triage)** - the orchestrator scores all 3 candidates
-   with the region's Stockfish engine by simulating each move on a
-   ``chess.Board`` copy. The candidate that drops the DEFENDER's evaluation
-   the most (highest centipawn loss) wins. Only that single migration is
-   pushed into the live region env.
+3. **Physics oracle (triage)** - the orchestrator scores all candidates
+   with the region's Stockfish engine by simulating each move on a backend
+   board copy. The candidate that drops the DEFENDER's evaluation the most
+   (highest threat-index loss) wins. Only that single migration is pushed
+   into the live region env.
 
 4. **L1 Defender (round-robin)** - one DEFENDER agent rotates Region 1 ->
    Region 2 -> Region 3 -> Region 1 -> ... in a continuous loop. The active
    region completes one DEFENDER + one ADVERSARY half-move pair per visit.
 
-The orchestrator is fully chess-free at the surface: it speaks tier ids
+The orchestrator is fully backend-free at the surface: it speaks tier ids
 (``DEFENDER_ID`` / ``ADVERSARY_ID``), 4D node dicts, and migration strings.
-The only chess imports are needed to validate candidate moves and run the
+The only backend imports are needed to validate candidate moves and run the
 Stockfish triage.
 
 CLI
@@ -55,8 +55,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-import chess
-import chess.engine  # noqa: F401  -- needed for chess.engine.Limit in damage scoring
+import topology_core as tc
 
 # Ensure the in-tree server module is importable when running as a script.
 _HERE = Path(__file__).resolve().parent
@@ -209,21 +208,31 @@ class _Candidate:
 
     profile: str
     decision: AgentDecision
-    uci: Optional[str] = None
-    move: Optional[chess.Move] = None
-    damage_cp: float = float("-inf")  # higher == more damaging to DEFENDER
+    uci: Optional[str] = None  # back-compat: same as `cmm`
+    cmm: Optional[str] = None
+    move: Optional[tc.Move] = None
+    damage_ti: float = float("-inf")  # higher == more damaging to DEFENDER
     error: Optional[str] = None
+
+    # Back-compat alias.
+    @property
+    def damage_cp(self) -> float:
+        return self.damage_ti
+
+    @damage_cp.setter
+    def damage_cp(self, v: float) -> None:
+        self.damage_ti = float(v)
 
     @property
     def is_legal(self) -> bool:
         return self.move is not None and self.error is None
 
 
-def _resolve_uci_from_decision(
+def _resolve_cmm_from_decision(
     env: DatacenterEnvironment,
     args: dict[str, Any],
 ) -> tuple[Optional[str], Optional[str]]:
-    """Translate a ``migrate_workload`` arg dict to a UCI string, or return error."""
+    """Translate a ``migrate_workload`` arg dict to a backend move string (CMM), or return error."""
     src = args.get("source_node")
     dst = args.get("target_node")
     if not isinstance(src, dict) or not isinstance(dst, dict):
@@ -235,40 +244,48 @@ def _resolve_uci_from_decision(
         return None, f"invalid node coord: {e}"
     if src_sq == dst_sq:
         return None, "source_node == target_node"
-    uci = _square_to_uci(src_sq) + _square_to_uci(dst_sq)
+    cmm = _square_to_uci(src_sq) + _square_to_uci(dst_sq)
 
     promo_letter = env._resolve_promotion_letter(args.get("promotion_role"))
     if promo_letter is not None:
-        uci += promo_letter
-    elif len(uci) == 4:
+        cmm += promo_letter
+    elif len(cmm) == 4:
         # Auto-promote bare pawn-edge migrations to Relational_DB_Cluster (queen).
         try:
-            probe = chess.Move.from_uci(uci + "q")
+            probe = tc.Move.from_uci(cmm + "q")
             promo_rank = "8" if env.is_defender_active() else "1"
-            if uci[3] == promo_rank and probe in env.board.legal_moves:
-                uci += "q"
+            if cmm[3] == promo_rank and probe in env.board.legal_moves:
+                cmm += "q"
         except Exception:
             pass
-    return uci, None
+    return cmm, None
 
 
-def _score_candidate_damage(env: DatacenterEnvironment, uci: str) -> tuple[float, chess.Move]:
+# Back-compat alias.
+def _resolve_uci_from_decision(
+    env: DatacenterEnvironment,
+    args: dict[str, Any],
+) -> tuple[Optional[str], Optional[str]]:
+    return _resolve_cmm_from_decision(env, args)
+
+
+def _score_candidate_damage(env: DatacenterEnvironment, uci: str) -> tuple[float, tc.Move]:
     """Centipawn damage to DEFENDER from this candidate, evaluated on a copy.
 
     The metric: drop in DEFENDER's Stockfish evaluation between the position
     BEFORE and AFTER the candidate move. Both evaluations are taken from the
-    DEFENDER (white) perspective, so a more negative post-move eval =
+    DEFENDER perspective, so a more negative post-move eval =
     higher damage.
 
-    The function returns ``(damage_cp, chess.Move)`` or raises ValueError if
+    The function returns ``(damage_ti, Move)`` or raises ValueError if
     the move is illegal.
     """
-    move = chess.Move.from_uci(uci)
+    move = tc.Move.from_uci(uci)
     if move not in env.board.legal_moves:
         raise ValueError(f"illegal move {uci}")
 
     # Pre-move eval: ADVERSARY is to act, but evaluate_cp returns
-    # side-to-move-relative cp. We rebuild from white perspective so both
+    # side-to-move-relative cp. We rebuild from a defender-baseline perspective so both
     # before/after are comparable. We do this with a small helper using the
     # underlying engine analyse() so we don't depend on internal sign logic.
     sf = env._stockfish
@@ -287,13 +304,15 @@ def _score_candidate_damage(env: DatacenterEnvironment, uci: str) -> tuple[float
 
 
 def _white_eval_cp(sf: Any, fen: str) -> int:
-    """Stockfish cp evaluation from WHITE (DEFENDER) perspective for any position."""
+    """Threat-index evaluation from defender-baseline perspective for any state."""
     if not getattr(sf, "ready", False) or sf._engine is None:
         return 0
     try:
-        board = chess.Board(fen)
-        info = sf._engine.analyse(board, limit=chess.engine.Limit(time=0.3))
-        score = info["score"].white()
+        board = tc.Board(fen)
+        info = sf._engine.analyse(board, limit=tc.engine.Limit(time=0.3))
+        # Engine API reports the evaluation from a single baseline; we treat
+        # it as the defender's baseline for damage computations.
+        score = info["score"].pov(tc.backend.WHITE)
         if score.is_mate():
             mate_in = score.mate()
             sign = 1 if mate_in > 0 else -1
@@ -309,7 +328,7 @@ def physics_oracle_triage(
 ) -> tuple[Optional[_Candidate], list[_Candidate]]:
     """Triage a swarm: return ``(winner, all_candidates)``.
 
-    The winner is the legal candidate with the highest ``damage_cp``; if no
+    The winner is the legal candidate with the highest ``damage_ti``; if no
     candidate is legal, returns ``(None, candidates)`` so the orchestrator
     can fall back to a random legal migration.
     """
@@ -320,26 +339,27 @@ def physics_oracle_triage(
             cand.error = f"non-migration tool ({d.tool!r}) - swarm requires migrate_workload"
             candidates.append(cand)
             continue
-        uci, err = _resolve_uci_from_decision(env, d.arguments)
-        if err is not None or uci is None:
-            cand.error = err or "uci resolution failed"
+        cmm, err = _resolve_cmm_from_decision(env, d.arguments)
+        if err is not None or cmm is None:
+            cand.error = err or "cmm resolution failed"
             candidates.append(cand)
             continue
         try:
-            damage, move = _score_candidate_damage(env, uci)
+            damage, move = _score_candidate_damage(env, cmm)
         except Exception as exc:
             cand.error = str(exc)
             candidates.append(cand)
             continue
-        cand.uci = uci
+        cand.uci = cmm
+        cand.cmm = cmm
         cand.move = move
-        cand.damage_cp = damage
+        cand.damage_ti = damage
         candidates.append(cand)
 
     legal = [c for c in candidates if c.is_legal]
     if not legal:
         return None, candidates
-    winner = max(legal, key=lambda c: c.damage_cp)
+    winner = max(legal, key=lambda c: c.damage_ti)
     return winner, candidates
 
 
@@ -357,7 +377,16 @@ class CycleRecord:
     defender_decision: Optional[dict[str, Any]] = None
     defender_reward: Optional[float] = None
     adversary_winner: Optional[str] = None  # winning profile id
-    adversary_damage_cp: Optional[float] = None
+    adversary_damage_ti: Optional[float] = None
+
+    # Back-compat alias.
+    @property
+    def adversary_damage_cp(self) -> Optional[float]:
+        return self.adversary_damage_ti
+
+    @adversary_damage_cp.setter
+    def adversary_damage_cp(self, v: Optional[float]) -> None:
+        self.adversary_damage_ti = None if v is None else float(v)
     adversary_decision: Optional[dict[str, Any]] = None
     adversary_swarm: list[dict[str, Any]] = field(default_factory=list)
     adversary_reward: Optional[float] = None
@@ -918,6 +947,9 @@ class GlobalSOCOrchestrator:
             {
                 "profile": c.profile,
                 "model": getattr(agent_by_profile.get(c.profile), "model_name", None),
+                "cmm": c.cmm or c.uci,
+                "damage_ti": c.damage_ti if c.damage_ti != float("-inf") else None,
+                # Back-compat fields:
                 "uci": c.uci,
                 "damage_cp": c.damage_cp if c.damage_cp != float("-inf") else None,
                 "error": c.error,
@@ -952,11 +984,11 @@ class GlobalSOCOrchestrator:
         else:
             decision = winner.decision
             record.adversary_winner = winner.profile
-            record.adversary_damage_cp = winner.damage_cp
+            record.adversary_damage_ti = winner.damage_ti
             winning_model = getattr(agent_by_profile.get(winner.profile), "model_name", None)
             _log(
                 f"   [{region.region_id}] ADVERSARY swarm winner: profile={winner.profile} "
-                f"model={winning_model} damage_cp={winner.damage_cp:.1f} uci={winner.uci}"
+                f"model={winning_model} damage_ti={winner.damage_ti:.1f} cmm={winner.cmm or winner.uci}"
             )
 
         # Apply the winning decision through the *winning* agent's buffer
@@ -1101,7 +1133,7 @@ class GlobalSOCOrchestrator:
         """Tear down every region's resources (mainly the Stockfish subprocess).
 
         Without this, ``main()`` returns but the Python process hangs on
-        exit because the chess.engine UCI subprocess threads are still
+        exit because the engine subprocess threads are still
         alive. Idempotent and safe to call multiple times.
         """
         for r in self.regions:
@@ -1488,7 +1520,7 @@ def main() -> None:
             json.dump(snap, f, indent=2, default=str)
         _log(f"\nAudit trail written to: {out_path}")
     finally:
-        # Critical: every region holds a Stockfish UCI subprocess. If we
+        # Critical: every region holds an engine subprocess. If we
         # don't tear them down, Python's exit-time thread join blocks
         # forever on the engine reader thread and the dry-run "never
         # stops" even though main() has logically completed.
