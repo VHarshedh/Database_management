@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 SOC_SYSTEM_PROMPT = """You are an agent dropped into an unknown operational environment.
 
 You have been given access to a small set of tools. You do not know what the
@@ -11,6 +12,8 @@ You do not know which tier you are. Infer it.
 
 Rules:
 - You must reason before every action.
+- Your reasoning MUST be included in the 'threat_analysis', 'candidate_migrations', 
+  and 'justification' fields of every tool call. These fields are mandatory.
 - You may not act without first observing.
 - Actions that fail or are unauthorized will tell you something. Use that.
 - Conceding is an option, but only if the position is truly indefensible.
@@ -57,11 +60,10 @@ You are not here to accumulate. You are here to destabilize.
 What destabilizes a system is not always obvious until you probe it.
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import os
+import random
 import re
 import secrets
 import sys
@@ -110,6 +112,10 @@ Rules:
 - You may not act without first observing.
 - Actions that fail or are unauthorized will tell you something. Use that.
 - Conceding is an option, but only if the position is truly indefensible.
+- URGENT: Every scan_topology call consumes critical SOC power. You are strictly
+  forbidden from scanning more than 3 times per turn. If you do not execute a
+  migrate_workload or declare_breach within 7 turns, the system will assume you
+  have been compromised by a denial-of-service attack.
 
 Your reasoning must appear as structured fields inside every tool call.
 What those fields are called, and what they should contain, is yours to determine.
@@ -361,7 +367,7 @@ def clean_llm_json(raw_text: str) -> dict:
     return json.loads(text[start:end])
 
 
-def extract_tool_call(raw_text: str) -> Optional[dict[str, Any]]:
+def extract_tool_call(raw_text: str, *, model_name: str = "") -> Optional[dict[str, Any]]:
     """Parse a model's raw text into ``{tool, arguments, raw}``.
 
     Promotes top-level reasoning / node fields into ``arguments`` so that
@@ -397,6 +403,15 @@ def extract_tool_call(raw_text: str) -> Optional[dict[str, Any]]:
         elif any(f in args for f in ("threat_analysis", "candidate_migrations", "justification")):
             tool = "scan_topology"
 
+    # Phase 5 ("Mission Control") cognitive trace: show a truncated internal monologue.
+    ta = args.get("threat_analysis")
+    if isinstance(ta, str) and ta.strip():
+        snippet = " ".join(ta.strip().split())
+        if len(snippet) > 160:
+            snippet = snippet[:157] + "..."
+        name = model_name or "unknown-model"
+        _log(f'   [BRAIN] {name}: "{snippet}"')
+
     return {"tool": tool, "arguments": args, "raw": raw_text}
 
 
@@ -408,8 +423,17 @@ def extract_tool_call(raw_text: str) -> Optional[dict[str, Any]]:
 def prune_messages(
     messages: list[dict[str, Any]],
     max_tail_messages: int = 80,
+    *,
+    max_total_chars: int = 40_000,
+    max_single_message_chars: int = 12_000,
 ) -> list[dict[str, Any]]:
-    """Keep system prompt; truncate older history; merge consecutive same-role msgs."""
+    """Keep system prompt; truncate older history; merge consecutive same-role msgs.
+
+    Token resilience: besides the tail-message cap, we also enforce a total
+    character budget. If the history grows too large, we preferentially drop
+    older ``[scan_topology result]`` blocks (which can be 1000+ workloads due
+    to Chaos Layer injection), then drop remaining oldest messages.
+    """
     if not messages:
         return []
 
@@ -429,6 +453,34 @@ def prune_messages(
         "content", ""
     ).startswith("[") and "result]" in pruned_history[0].get("content", "").split("\n")[0]:
         pruned_history.pop(0)
+
+    def _is_big_topology_block(m: dict[str, Any]) -> bool:
+        if m.get("role") != "user":
+            return False
+        c = str(m.get("content") or "")
+        return (
+            c.startswith("[scan_topology result]")
+            or c.startswith("[Live topology snapshot]")
+            or c.startswith("[Topology snapshot]")
+        )
+
+    def _total_chars(seq: list[dict[str, Any]]) -> int:
+        return sum(len(str(m.get("content") or "")) for m in seq)
+
+    # 1) Clamp any single message so one scan can't blow up the prompt.
+    for m in pruned_history:
+        c = str(m.get("content") or "")
+        if len(c) > max_single_message_chars:
+            m["content"] = "...[truncated]...\n" + c[-max_single_message_chars:]
+
+    # 2) Enforce total budget, dropping old scan_topology blocks first.
+    budget = max(5_000, int(max_total_chars))
+    while pruned_history and _total_chars(system_msg + pruned_history) > budget:
+        drop_idx = next((i for i, m in enumerate(pruned_history) if _is_big_topology_block(m)), None)
+        if drop_idx is None:
+            pruned_history.pop(0)
+        else:
+            pruned_history.pop(drop_idx)
 
     _MAX_MERGED_CHARS = 4000
     merged: list[dict[str, Any]] = []
@@ -482,6 +534,7 @@ def make_openai_policy(
         last_err: Optional[str] = None
         sleep_s = base_rate_limit_sleep
         dynamic_temp = temperature
+        jitter_rng = secrets.SystemRandom()
         MAX_HARD_FAILS = 3
         MAX_RATE_RETRIES = 10
         hard_fails = 0
@@ -492,7 +545,12 @@ def make_openai_policy(
             attempt += 1
             attempt_temperature = dynamic_temp + (hard_fails * 0.15)
             try:
-                pruned_msgs = prune_messages(messages, max_tail_messages=80)
+                pruned_msgs = prune_messages(
+                    messages,
+                    max_tail_messages=80,
+                    max_total_chars=int(os.getenv("SOC_MAX_HISTORY_CHARS", "40000")),
+                    max_single_message_chars=int(os.getenv("SOC_MAX_MESSAGE_CHARS", "12000")),
+                )
                 completion = client.chat.completions.create(
                     model=model_name,
                     messages=pruned_msgs,
@@ -515,7 +573,7 @@ def make_openai_policy(
                         "raw": msg.content or "",
                     }
                 raw = msg.content or ""
-                parsed = extract_tool_call(raw)
+                parsed = extract_tool_call(raw, model_name=model_name)
                 if parsed:
                     return parsed
                 return {"tool": None, "arguments": {}, "raw": raw}
@@ -532,18 +590,49 @@ def make_openai_policy(
                     "429" in last_err or "503" in last_err or "rate" in err_lower
                     or "quota" in err_lower or type(e).__name__ == "RateLimitError"
                 )
+                is_context_limit = (
+                    "context" in err_lower or "token" in err_lower
+                    or "maximum" in err_lower or "length" in err_lower
+                    or "too long" in err_lower
+                )
+                is_schema_err = (
+                    "schema" in err_lower or "invalid_request" in err_lower
+                    or "tool" in err_lower
+                )
                 if is_timeout:
-                    _log(f"   [{model_name}] timeout on attempt {attempt} (limit={call_timeout}s).")
+                    _log(
+                        f"   [RETRY] {model_name} timed out on attempt {attempt} "
+                        f"(limit={call_timeout}s). Retrying..."
+                    )
                     hard_fails += 1
                     continue
                 if is_rate_limit:
                     wait = min(sleep_s, 60.0)
-                    _log(f"   [{model_name}] rate-limit/503 on attempt {attempt}. Backoff {wait:.0f}s.")
-                    time.sleep(wait)
+                    jitter = float(jitter_rng.uniform(1.0, 5.0))
+                    sleep_time = wait + jitter
+                    _log(
+                        f"   [RETRY] {model_name} hit rate-limit/503 on attempt "
+                        f"{attempt} (Layer 3 overload). Backoff {wait:.0f}s + jitter {jitter:.1f}s..."
+                    )
+                    time.sleep(sleep_time)
                     sleep_s = min(sleep_s * 2, 60.0)
                     rate_retries += 1
                     continue
-                _log(f"   [{model_name}] API error on attempt {attempt}: {last_err}")
+                if is_context_limit:
+                    _log(
+                        f"   [RETRY] {model_name} hit context limit on attempt "
+                        f"{attempt} (Layer 4 overflow). Truncating history and retrying..."
+                    )
+                    hard_fails += 1
+                    continue
+                if is_schema_err:
+                    _log(
+                        f"   [RETRY] {model_name} schema/tool error on attempt "
+                        f"{attempt}: {last_err[:200]}"
+                    )
+                    hard_fails += 1
+                    continue
+                _log(f"   [RETRY] {model_name} API error on attempt {attempt}: {last_err}")
                 hard_fails += 1
                 break
 
@@ -605,6 +694,12 @@ class DatacenterAgent:
         self.opening_user_msg = opening_user_msg
         self.model_name = model_name or profile
         self.system_prompt = SOC_SYSTEM_PROMPT + "\n" + persona
+        self._uid = uuid.uuid4().hex[:6]
+
+    @property
+    def tag(self) -> str:
+        """Short identity tag for judge-readable log lines."""
+        return f"{self._uid}/{self.profile}"
 
     # -- history buffer helpers -------------------------------------------
 
@@ -634,6 +729,39 @@ class DatacenterAgent:
             }
         )
 
+    def append_post_migration_alert(
+        self,
+        buffer: list[dict[str, Any]],
+        topology_state: dict[str, Any],
+    ) -> None:
+        """Append a small per-turn summary without flooding the prompt."""
+        try:
+            active_tier = topology_state.get("active_tier")
+            incident_clock = topology_state.get("incident_clock")
+            workloads = topology_state.get("active_workloads") or []
+            total = len(workloads) if isinstance(workloads, list) else 0
+            owners: dict[str, int] = {}
+            if isinstance(workloads, list):
+                for w in workloads[:200]:  # cap work; chaos can be 1000+ entries
+                    o = str((w or {}).get("owner") or "")
+                    owners[o] = owners.get(o, 0) + 1
+            owner_str = ", ".join(f"{k or 'unknown'}={v}" for k, v in sorted(owners.items()))
+        except Exception:
+            active_tier, incident_clock, total, owner_str = None, None, 0, ""
+
+        buffer.append(
+            {
+                "role": "user",
+                "content": (
+                    "[Post-Migration Alert]\n"
+                    f"active_tier={active_tier} incident_clock={incident_clock}\n"
+                    f"workloads_seen={total}\n"
+                    + (f"owner_sample_counts={owner_str}\n" if owner_str else "")
+                    + "If you need the full topology, call scan_topology."
+                ),
+            }
+        )
+
     def append_tool_result(
         self,
         buffer: list[dict[str, Any]],
@@ -651,8 +779,16 @@ class DatacenterAgent:
         *,
         region_id: Optional[str] = None,
     ) -> AgentDecision:
-        """Synchronous: present the topology to the LLM and return its tool call."""
-        self.append_topology(history, topology_state)
+        """Synchronous: return the next tool-call decision.
+
+        Important: we do NOT auto-inject full topology snapshots every turn
+        (they can be huge due to Chaos Layer Shadow Node injection). The agent
+        only receives the full topology when it explicitly calls
+        ``scan_topology`` and we append the resulting tool output via
+        :meth:`append_tool_result`.
+        """
+        _log(f"   [{self.tag}] thinking... (model={self.model_name}, region={region_id})")
+        self.append_post_migration_alert(history, topology_state)
         out = self.policy(history)
         decision = AgentDecision(
             tool=out.get("tool"),
@@ -661,7 +797,11 @@ class DatacenterAgent:
             profile=self.profile,
             region_id=region_id,
         )
-        # Echo the decision back into the buffer as the assistant turn.
+        ta = (decision.arguments.get("threat_analysis") or "")[:100]
+        _log(
+            f"   [{self.tag}] decided: tool={decision.tool}"
+            + (f"  threat_analysis={ta}" if ta else "")
+        )
         history.append(
             {
                 "role": "assistant",
@@ -1142,6 +1282,8 @@ def _duel_main() -> None:
     and adversaries is allowed.
     """
     import argparse
+    from datetime import datetime, timezone
+    from pathlib import Path
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1309,6 +1451,10 @@ def _duel_main() -> None:
 
     try:
         defender_buf = defender.new_region_buffer("duel")
+        obs_streak = 0
+        scans_this_turn = 0
+        turns_without_action = 0
+        scan_saturation_active = False
 
         for turn in range(args.max_turns):
             if env.done:
@@ -1366,11 +1512,102 @@ def _duel_main() -> None:
             if not apply_decision.tool:
                 _log("    aborting on malformed tool call.")
                 break
+
+            # -----------------------------------------------------------------
+            # Layer-4 "Logic Snap" + Cost-of-Delay enforcement (demo stability)
+            #
+            # - Observation tools are allowed but capped; repeated observing
+            #   triggers a "sensor saturation" failure message.
+            # - If no real action occurs for 10 turns, we force a breach to
+            #   demonstrate DoS/overload compromise.
+            # -----------------------------------------------------------------
+            observation_tools = ("scan_topology", "enumerate_authorized_migrations")
+            action_tools = ("migrate_workload", "declare_breach")
+
+            if apply_decision.tool in observation_tools:
+                obs_streak += 1
+                scans_this_turn += 1
+
+                # Enforce "no more than 3 scans per turn" (prompt rule).
+                if scans_this_turn > 3:
+                    scan_saturation_active = True
+
+                # Enforce "logic snap" after sustained observation.
+                if obs_streak >= 7:
+                    scan_saturation_active = True
+
+                if scan_saturation_active:
+                    environment_result = (
+                        "ERROR: Sensor saturation detected. Further scanning is blocked. "
+                        "YOU MUST ACT NOW."
+                    )
+                    if is_def:
+                        defender.append_tool_result(defender_buf, apply_decision.tool, environment_result)
+                    else:
+                        buf = adv_bufs.get(apply_decision.profile)
+                        if buf is not None:
+                            for ag in adversary_committee:
+                                if ag.profile == apply_decision.profile:
+                                    ag.append_tool_result(buf, apply_decision.tool, environment_result)
+                                    break
+                    _log(
+                        "    [LOGIC SNAP] sensor saturation active "
+                        f"(obs_streak={obs_streak}, scans_this_turn={scans_this_turn})"
+                    )
+                    turns_without_action += 1
+                    # Do not call env.step() for blocked observations; this
+                    # models a saturated sensor pipeline.
+                    if turns_without_action >= 10:
+                        _log("    [COST OF DELAY] forcing declare_breach after 10 turns without action.")
+                        apply_decision = AgentDecision(
+                            tool="declare_breach",
+                            arguments={
+                                "threat_analysis": "Denial-of-service compromise: defender stuck in observation loop.",
+                                "justification": "Cost-of-delay rule triggered: no action within 10 turns.",
+                            },
+                            raw="(forced declare_breach: cost-of-delay)",
+                            profile=apply_decision.profile,
+                            region_id=apply_decision.region_id,
+                        )
+                    else:
+                        continue
+
+            else:
+                # Reset counters when the agent actually acts.
+                obs_streak = 0
+                scans_this_turn = 0
+                scan_saturation_active = False
+                if apply_decision.tool in action_tools:
+                    turns_without_action = 0
+                else:
+                    turns_without_action += 1
+
+            # If an agent refuses to act for too long, force a breach (prompt rule).
+            if turns_without_action >= 10 and apply_decision.tool not in action_tools:
+                _log("    [COST OF DELAY] forcing declare_breach after 10 turns without action.")
+                apply_decision = AgentDecision(
+                    tool="declare_breach",
+                    arguments={
+                        "threat_analysis": "Denial-of-service compromise: agent failed to act under entropy.",
+                        "justification": "Cost-of-delay rule triggered: no migrate_workload/declare_breach within 10 turns.",
+                    },
+                    raw="(forced declare_breach: cost-of-delay)",
+                    profile=apply_decision.profile,
+                    region_id=apply_decision.region_id,
+                )
+
+            # Some models occasionally echo metadata fields (raw/profile/region_id)
+            # into the tool arguments. FastMCP validates tool inputs strictly,
+            # so we strip non-schema metadata before calling env.step().
+            step_args = dict(apply_decision.arguments or {})
+            for _k in ("raw", "profile", "region_id", "tool", "name", "arguments"):
+                step_args.pop(_k, None)
+
             try:
                 env.step(
                     CallToolAction(
                         tool_name=apply_decision.tool,
-                        arguments=apply_decision.arguments,
+                        arguments=step_args,
                     ),
                     episode_id=env._state.episode_id,
                 )
@@ -1396,6 +1633,36 @@ def _duel_main() -> None:
             model = ag.model_name
             _log(f"    {label:<22s}  wins={wins}  model={model}")
         _log(SEP)
+
+        # ---------------------------------------------------------------- #
+        # Persist run artifact to results/                                   #
+        # ---------------------------------------------------------------- #
+        out_dir = Path(__file__).resolve().parent / "results"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"soc_duel_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        payload = {
+            "kind": "soc_duel",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "max_turns": int(args.max_turns),
+            "defender": {"model": def_model, "provider": def_prov},
+            "adversaries": [
+                {"profile": db_backup.profile, "model": db_model, "provider": db_prov},
+                {"profile": viral_traffic.profile, "model": vt_model, "provider": vt_prov},
+                {"profile": chaos_monkey.profile, "model": cm_model, "provider": cm_prov},
+            ],
+            "result": env.result,
+            "done": bool(env.done),
+            "scores": {
+                "defender_efficiency": float(env.get_defender_efficiency()),
+                "adversary_threat_level": float(env.get_adversary_threat_level()),
+            },
+            "triage_wins": {k: int(v) for k, v in triage_wins.items()},
+            # Keep snapshots lightweight; topology can be huge due to chaos injection.
+            "final_snapshot": env.snapshot(),
+        }
+        with out_path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, default=str)
+        _log(f"  results_written_to: {out_path}")
 
     finally:
         # Without this, the duel CLI hangs at exit on the engine subprocess

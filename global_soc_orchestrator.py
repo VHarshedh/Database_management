@@ -360,6 +360,35 @@ def physics_oracle_triage(
     if not legal:
         return None, candidates
     winner = max(legal, key=lambda c: c.damage_ti)
+
+    # Phase 5 ("Mission Control") judge-centric logging:
+    # Print the full swarm scoreboard BEFORE returning.
+    print("   Adversary Triage Scoreboard:", file=sys.stderr, flush=True)
+    for c in candidates:
+        persona = (c.profile.split("__", 1)[0] if isinstance(c.profile, str) else str(c.profile))
+        move_label = c.cmm or c.uci or "(none)"
+        if c.is_legal:
+            dmg_cp = int(c.damage_cp)
+            win_mark = "  <--- WINNER" if c is winner else ""
+            print(
+                f"   [TRIAGE] {persona} proposed {move_label} (damage: {dmg_cp}cp){win_mark}",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            err = c.error or "illegal candidate"
+            print(
+                f"   [TRIAGE] {persona} proposed {move_label} (illegal: {err})",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    w_persona = (winner.profile.split('__', 1)[0] if isinstance(winner.profile, str) else str(winner.profile))
+    print(
+        f"   [TRIAGE] -> winner: {w_persona} (damage: {int(winner.damage_cp)}cp)",
+        file=sys.stderr,
+        flush=True,
+    )
     return winner, candidates
 
 
@@ -428,6 +457,7 @@ class GlobalSOCOrchestrator:
         swarm_size_range: tuple[int, int] = (SWARM_SIZE_MIN, SWARM_SIZE_MAX),
         incident_clock_scaling: bool = True,
         hitl_enabled: Optional[bool] = None,
+        max_concurrent_llm_calls: int = 5,
     ) -> None:
         if not regions:
             raise ValueError("at least one region runner is required")
@@ -468,6 +498,13 @@ class GlobalSOCOrchestrator:
         self.swarm_size_range: tuple[int, int] = (lo, hi)
         self.incident_clock_scaling: bool = incident_clock_scaling
         self.audit_trail: list[CycleRecord] = []
+        # Cap concurrent LLM calls so large swarms don't create bursty 429/503s.
+        # This semaphore is used by the adversary swarm fan-out (and can be
+        # reused for any future parallel LLM polling).
+        self.concurrency_limit = asyncio.Semaphore(max(1, int(max_concurrent_llm_calls)))
+        # Layer 3 traffic shaping: a tight gate on calls to the inference gateway
+        # to avoid thundering-herd retry storms under 429/503 conditions.
+        self.gateway_semaphore = asyncio.Semaphore(2)
         # Layer 5 control: set to False for unattended runs (CI, dry-runs).
         # If unset, default to True only when stdin looks interactive so the
         # loop never blocks on input() in non-interactive contexts.
@@ -715,29 +752,43 @@ class GlobalSOCOrchestrator:
         defender turn with no engine push - the env-side escalation row has
         already been written to the audit log).
         """
-        bar = "=" * 80
         args = escalation_decision.arguments or {}
         threat_level = str(args.get("threat_level", "")).strip().upper() or "(unspecified)"
         mitigation_request = str(args.get("mitigation_request", "")).strip() or "(none)"
         justification = str(args.get("justification", "")).strip() or "(none)"
 
-        print("\n" + bar, file=sys.stderr, flush=True)
+        # ANSI colour helpers (graceful fallback when stderr is not a tty)
+        _use_ansi = hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
+        _RED = "\033[1;97;41m" if _use_ansi else ""
+        _YEL = "\033[1;33m" if _use_ansi else ""
+        _RST = "\033[0m" if _use_ansi else ""
+
+        bar = "=" * 80
+        top = f"\n{_RED}{'#' * 80}{_RST}"
+        bot = f"{_RED}{'#' * 80}{_RST}\n"
+
+        print(top, file=sys.stderr, flush=True)
         print(
-            "PROTOCOL RED: CATASTROPHIC ANOMALY. SYSADMIN OVERRIDE REQUIRED.",
+            f"{_RED}###  PROTOCOL RED: CATASTROPHIC ANOMALY  —  SYSADMIN OVERRIDE REQUIRED  ###{_RST}",
             file=sys.stderr, flush=True,
         )
         print(
-            f"  region={region.region_id} ({region.region_name})",
+            f"{_RED}###  async loop PAUSED — awaiting human intelligence                    ###{_RST}",
             file=sys.stderr, flush=True,
         )
-        print(f"  threat_level={threat_level}", file=sys.stderr, flush=True)
+        print(bot, file=sys.stderr, flush=True)
         print(
-            f"  mitigation_request={mitigation_request}",
+            f"  {_YEL}region{_RST}={region.region_id} ({region.region_name})",
             file=sys.stderr, flush=True,
         )
-        print(f"  defender_justification={justification}", file=sys.stderr, flush=True)
+        print(f"  {_YEL}threat_level{_RST}={threat_level}", file=sys.stderr, flush=True)
         print(
-            "Enter manual 4D coordinates (src->dst):",
+            f"  {_YEL}mitigation_request{_RST}={mitigation_request}",
+            file=sys.stderr, flush=True,
+        )
+        print(f"  {_YEL}defender_justification{_RST}={justification}", file=sys.stderr, flush=True)
+        print(
+            f"\n{bar}\n  Enter manual 4D coordinates (src->dst):",
             file=sys.stderr, flush=True,
         )
         print(
@@ -919,10 +970,13 @@ class GlobalSOCOrchestrator:
 
         # Fan out: each adversary writes to its own history buffer so they
         # do not mutate one shared list mid-flight.
-        tasks = []
-        for adv in active_swarm:
+        async def _limited_choose(adv: DatacenterAgent) -> AgentDecision:
             buf = self._history_for(region, adv)
-            tasks.append(adv.choose_async(topo_snapshot, buf, region_id=region.region_id))
+            async with self.concurrency_limit:
+                async with self.gateway_semaphore:
+                    return await adv.choose_async(topo_snapshot, buf, region_id=region.region_id)
+
+        tasks = [_limited_choose(adv) for adv in active_swarm]
 
         decisions: list[AgentDecision] = []
         gathered = await asyncio.gather(*tasks, return_exceptions=True)
@@ -943,6 +997,22 @@ class GlobalSOCOrchestrator:
 
         winner, all_candidates = physics_oracle_triage(region.env, decisions)
 
+        # ── Triage Scoreboard (Phase 5: judge-centric verbose logging) ───
+        _log(f"   [{region.region_id}] ── TRIAGE SCOREBOARD ──")
+        for c in all_candidates:
+            model_label = getattr(agent_by_profile.get(c.profile), "model_name", "?")
+            ta = (c.decision.arguments.get("threat_analysis") or "")[:120]
+            if c.error:
+                status = f"ERROR: {c.error}"
+            elif c.damage_ti == float("-inf"):
+                status = "ILLEGAL/non-migration"
+            else:
+                marker = " <--- WINNER" if (winner is not None and c is winner) else ""
+                status = f"damage_ti={c.damage_ti:+.0f}  cmm={c.cmm or c.uci}{marker}"
+            _log(f"      [TRIAGE] {c.profile} ({model_label}): {status}")
+            if ta:
+                _log(f"               threat_analysis: {ta}")
+
         record.adversary_swarm = [
             {
                 "profile": c.profile,
@@ -959,7 +1029,6 @@ class GlobalSOCOrchestrator:
         ]
 
         if winner is None:
-            # All N candidates illegal -> fall back to a random legal migration.
             record.fallback_used = True
             fallback = self._random_legal_migration(region.env)
             if fallback is None:
@@ -977,8 +1046,10 @@ class GlobalSOCOrchestrator:
                 return record
             decision = fallback
             _log(
-                f"   [{region.region_id}] ADVERSARY swarm: no legal candidate, "
-                f"using random fallback {decision.arguments.get('source_node')} -> "
+                f"   [{region.region_id}] "
+                "SWARM COGNITIVE FAILURE: all N candidates illegal. "
+                "Falling back to stochastic migration: "
+                f"{decision.arguments.get('source_node')} -> "
                 f"{decision.arguments.get('target_node')}"
             )
         else:
@@ -1161,6 +1232,7 @@ def build_orchestrator(
     incident_clock_scaling: bool = True,
     region_names: tuple[str, ...] = DEFAULT_REGION_NAMES,
     hitl_enabled: Optional[bool] = None,
+    max_concurrent_llm_calls: int = 5,
 ) -> GlobalSOCOrchestrator:
     """Instantiate one ``DatacenterEnvironment`` per region and bundle them.
 
@@ -1193,6 +1265,7 @@ def build_orchestrator(
         swarm_size_range=swarm_size_range,
         incident_clock_scaling=incident_clock_scaling,
         hitl_enabled=hitl_enabled,
+        max_concurrent_llm_calls=max_concurrent_llm_calls,
     )
 
 
@@ -1409,6 +1482,12 @@ def main() -> None:
         "--no-clock-scaling", action="store_true",
         help="Disable incident-clock-based scaling of the swarm upper bound.",
     )
+    parser.add_argument(
+        "--max-concurrent-llm-calls",
+        type=int,
+        default=int(os.getenv("SOC_MAX_CONCURRENT_LLM_CALLS", "5")),
+        help="Cap in-flight LLM calls during swarm polling (default: 5).",
+    )
     args = parser.parse_args()
 
     swarm_size_range = (max(1, args.swarm_min), max(args.swarm_min, args.swarm_max))
@@ -1486,6 +1565,7 @@ def main() -> None:
         incident_clock_scaling=incident_clock_scaling,
         region_names=region_names,
         hitl_enabled=hitl_enabled,
+        max_concurrent_llm_calls=args.max_concurrent_llm_calls,
     )
 
     _log("=" * 60)

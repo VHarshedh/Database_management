@@ -39,6 +39,9 @@ _HERE = Path(__file__).resolve().parent
 # Stable root for any future assets (pieces, icons) — Gradio UI is web-based, not Pygame.
 BASE_DIR = _HERE
 _SF_PATHS = [
+    _HERE / "engine" / "soc_threat_analyzer.exe",
+    _HERE / "engine" / "soc_threat_analyzer",
+    # Back-compat names:
     _HERE / "engine" / "stockfish.exe",
     _HERE / "engine" / "stockfish",
     Path("/usr/games/stockfish"),
@@ -49,7 +52,7 @@ SF_DEPTH = int(os.getenv("VIZ_SF_DEPTH", "15"))
 
 def _find_stockfish() -> Optional[str]:
     import shutil
-    env_path = os.getenv("CHESS_STOCKFISH_PATH")
+    env_path = os.getenv("SOC_THREAT_ANALYZER_PATH") or os.getenv("CHESS_STOCKFISH_PATH")
     if env_path and Path(env_path).is_file():
         return env_path
     for p in _SF_PATHS:

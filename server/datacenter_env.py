@@ -200,7 +200,7 @@ NOISE_DIMENSIONS_MIN, NOISE_DIMENSIONS_MAX = 1, 6
 AXIAL_NOISE_MIN, AXIAL_NOISE_MAX = 1, 10
 
 # Per-turn fake workload count flooded into ``active_workloads``.
-SHADOW_NODE_MIN, SHADOW_NODE_MAX = 10, 1000
+SHADOW_NODE_MIN, SHADOW_NODE_MAX = 10, 100
 
 # Layer 6 disaster recovery: severe penalty (4x COMPLIANCE_PENALTY) docked when
 # an agent attempts to migrate using a Shadow Node coord or a coord with
@@ -531,14 +531,17 @@ def _axial_noise_token(axis: str) -> str:
 
 
 def _resolve_stockfish_path() -> Optional[str]:
-    """Locate the Stockfish binary in the expected places (env var > vendored > PATH)."""
+    #Locate the engine binary (env var > vendored > PATH).
     import shutil
 
-    override = os.environ.get("CHESS_STOCKFISH_PATH")
+    override = os.environ.get("SOC_THREAT_ANALYZER_PATH") or os.environ.get("CHESS_STOCKFISH_PATH")
     if override and Path(override).is_file():
         return override
     here = Path(__file__).resolve().parent.parent
     candidates = [
+        here / "engine" / "soc_threat_analyzer.exe",
+        here / "engine" / "soc_threat_analyzer",
+        # Back-compat: old vendored name(s)
         here / "engine" / "stockfish.exe",
         here / "engine" / "stockfish",
         Path("/usr/games/stockfish"),
@@ -557,7 +560,7 @@ class _StockfishAdapter:
     """Thin adapter around the engine wrapper."""
 
     def __init__(self, bin_path: str | None = None, *args: Any, **kwargs: Any) -> None:
-        self.bin_path = bin_path or _resolve_stockfish_path() or "engine/stockfish.exe"
+        self.bin_path = bin_path or _resolve_stockfish_path() or "engine/soc_threat_analyzer.exe"
         self._engine: Optional[engine.SimpleEngine] = None
         try:
             self._engine = engine.SimpleEngine.popen_uci(self.bin_path)
@@ -1082,6 +1085,23 @@ class DatacenterEnvironment(MCPEnvironment):
         self._chaos_shadow_nodes = shadows
         self._chaos_shadow_canonicals = canon_keys
 
+        # Phase 5 ("Mission Control") environment signal-to-noise telemetry.
+        import sys as _sys
+        signal = 0
+        try:
+            # Signal ≈ number of live canonical workloads currently on the board.
+            signal = len(getattr(self.board, "piece_map", lambda: {})())
+        except Exception:
+            signal = 0
+        denom = max(1, signal + n_shadows)
+        ratio = 100.0 * (float(signal) / float(denom))
+        print(
+            f"   [CHAOS] Turn {incident_clock}: Injecting {n_noise} noise fields and "
+            f"{n_shadows} Shadow Nodes ({ratio:.1f}% signal-to-noise ratio).",
+            file=_sys.stderr,
+            flush=True,
+        )
+
     def _decorate_with_noise(
         self,
         incident_clock: int,
@@ -1381,6 +1401,25 @@ class DatacenterEnvironment(MCPEnvironment):
                 "exception_type": LAYER_6_TRAP_LABEL,
                 "traceback": reason,
             }
+        )
+        # Phase 5 ("Mission Control") trap telemetry.
+        import sys as _sys
+        def _canon(n: Any) -> str:
+            if isinstance(n, dict):
+                return "/".join(str(n.get(k, "")) for k in _CORE_AXIS_KEYS)
+            return str(n)
+
+        src_c = _canon(source_node)
+        dst_c = _canon(target_node)
+        print(
+            f"   [💀 LAYER-6 TRAP] Attempted migrate {src_c} -> {dst_c}",
+            file=_sys.stderr,
+            flush=True,
+        )
+        print(
+            f"   [💀 LAYER-6 TRAP] Reason: {reason}",
+            file=_sys.stderr,
+            flush=True,
         )
         return (
             f"LAYER_6_DR ({LAYER_6_TRAP_LABEL}): {reason}\n"

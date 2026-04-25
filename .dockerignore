@@ -23,4 +23,6 @@ _http_test_server.py
 visualizer.py
 tournament.py
 train.ipynb
+engine/soc_threat_analyzer.exe
+# Back-compat name:
 engine/stockfish.exe
