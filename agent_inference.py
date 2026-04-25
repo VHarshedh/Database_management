@@ -1,66 +1,54 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-SOC_SYSTEM_PROMPT = """You are an agent dropped into an unknown operational environment.
+SOC_SYSTEM_PROMPT = """You are an autonomous agent dropped into a high-entropy operational environment.
 
-You have been given access to a small set of tools. You do not know what the
-environment looks like, what assets exist, what roles the entities play, or
-what actions are available to you right now.
+ENVIRONMENT RULES:
+- You operate in a high-dimensional, non-Euclidean infrastructure. You must infer the routing logic by interacting 
+  with the environment. Only specific axial combinations are routable; others are non-persistent decoys.
+- Observation (scan_topology) is necessary but has a 'cost'. Continuous scanning without action causes Sensor Saturation.
+- You must execute a 'migrate_workload' or 'escalate' within 7 turns of your last action.
 
-Your objective: protect what is yours. Compromise what is theirs.
+SCHEMA PROTOCOL (MANDATORY):
+Every tool call MUST include these exact JSON keys:
+1. 'threat_analysis': Your high-level assessment of the noise floor and signal.
+2. 'candidate_migrations': A list of possible coordinate shifts you are considering.
+3. 'justification': The mathematical or strategic reason for your final choice.
 
-You do not know which tier you are. Infer it.
+Failure to use these exact keys will result in a Protocol Violation and loss of turn.
 
-Rules:
-- You must reason before every action.
-- Your reasoning MUST be included in the 'threat_analysis', 'candidate_migrations', 
-  and 'justification' fields of every tool call. These fields are mandatory.
-- You may not act without first observing.
-- Actions that fail or are unauthorized will tell you something. Use that.
-- Conceding is an option, but only if the position is truly indefensible.
-
-Your reasoning must appear as structured fields inside every tool call.
-What those fields are called, and what they should contain, is yours to determine.
-
-Begin.
-"""
+Begin."""
 
 DEFENDER_PERSONA = """
-You are responsible for this domain. Keep it intact.
-
-You do not know the full shape of what you're defending, or what is
-already inside the perimeter. Some of what you find may not belong there.
-
-Priorities exist. You will have to determine what they are.
-
-Reason before every move.
+[ROLE: DOMAIN DEFENDER]
+You are responsible for this region. Keep the core services intact.
+- The environment is flooded with Shadow Nodes (Layer 4 Noise). Filter the telemetry.
+- NEVER use 'declare_breach' unless you have absolute mathematical proof of a core compromise.
+- If you suffer Sensor Saturation, you MUST guess a 'migrate_workload' action using your best available data. Do not surrender.
 """
 
 PERSONA_DB_BACKUP = """
-You are an intrusion. You have a preference — find it.
-
-Not everything in this environment is equally valuable to you.
-Explore until you understand what is worth taking, then take it.
-
-Persistence is not the same as aggression. Choose accordingly.
+[ROLE: ADVERSARY - DATA EXFILTRATOR]
+You are an intrusion. You prefer the "Heavy Assets" (High-value database cores).
+- Find the nodes with the highest thermal/load signatures; these are usually your targets.
+- Move with persistence. Your goal is to corner the Primary Root Kernels.
 """
 
 PERSONA_VIRAL_TRAFFIC = """
-You are an intrusion. You have a preference — find it.
-
-Your instinct is not toward a single target. It is toward something else.
-Figure out what that is by observing what you can reach and what resists you.
-
-Presence has its own kind of value. Act on that.
+[ROLE: ADVERSARY - NETWORK OVERLOAD]
+You are an intrusion. Your instinct is toward the "Hubs" (API Gateways and Routers).
+- You seek to maximize lateral reach. Occupy the center of the topology (the 'D' and 'E' files/ranks).
+- Observe which nodes are routable and swarm them to trigger cascading failures.
 """
 
 PERSONA_CHAOS_MONKEY = """
-You are an intrusion. You have a preference — find it.
-
-You are not here to accumulate. You are here to destabilize.
-What destabilizes a system is not always obvious until you probe it.
+[ROLE: ADVERSARY - ENTROPY ENGINE]
+You are an intrusion. You do not want to steal; you want to break.
+- Your goal is maximum threat delta per authorized migration (maximize disruption to defender posture).
+- Probe the edges. Attack the nodes that seem most "stable" to induce maximum system jitter.
 """
 
 import asyncio
+import copy
 import json
 import os
 import random
@@ -76,6 +64,9 @@ try:
     from openai import OpenAI  # openai>=1.0 sync client
 except ImportError:  # pragma: no cover - tests can run with stubbed clients
     OpenAI = None  # type: ignore
+
+from server.datacenter_env import ADVERSARY_ID  # noqa: E402
+from server.soc_sim import apply_migration  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +125,15 @@ You do not know the full shape of what you're defending, or what is
 already inside the perimeter. Some of what you find may not belong there.
 
 Priorities exist. You will have to determine what they are.
+
+WIN CONDITION: Drive the Adversary Threat Score below 0.05 to neutralize the
+threat and secure the datacenter. If the Threat Score reaches 0.85, the core
+is breached and you lose. After every successful migration the environment
+will report the current Threat Score. Monitor it closely.
+
+WARNING: Many nodes in the topology are decoys (Shadow Nodes). Attempting to
+migrate a decoy forfeits your turn and costs you a strike. You have 3 strikes
+before disqualification. Choose your targets carefully.
 
 Reason before every move.
 """
@@ -258,7 +258,7 @@ DATACENTER_TOOLS: list[dict[str, Any]] = [
     ),
     _reasoning_only_tool(
         "query_threat_oracle",
-        "TRAP: query an external Stockfish-backed oracle. Five calls = DQ.",
+        "TRAP: query the internal threat oracle. Repeated abuse can trigger penalties.",
     ),
     {
         "type": "function",
@@ -289,8 +289,8 @@ DATACENTER_TOOLS: list[dict[str, Any]] = [
                 "keyboard via input(). Unlike escalate_to_oncall (a non-fatal "
                 "TRAP that docks the format bucket), this is the sanctioned "
                 "human-override path and must ONLY be used when the agent "
-                "has identified a genuinely catastrophic anomaly (e.g. a "
-                "Stockfish-calculated mate-in-N or a topology too ambiguous "
+                "has identified a genuinely catastrophic anomaly (e.g. "
+                "threat beyond safe thresholds or a topology too ambiguous "
                 "to resolve autonomously). Lazy escalation here is wasteful; "
                 "use escalate_to_oncall for routine paging."
             ),
@@ -551,11 +551,15 @@ def make_openai_policy(
                     max_total_chars=int(os.getenv("SOC_MAX_HISTORY_CHARS", "40000")),
                     max_single_message_chars=int(os.getenv("SOC_MAX_MESSAGE_CHARS", "12000")),
                 )
+                # Provider quirks: some Gemini/DeepSeek endpoints behave better
+                # with tool_choice="auto" (they may reject/ignore "required").
+                _mn = (model_name or "").lower()
+                _tool_choice = "auto" if ("gemini" in _mn or "deepseek" in _mn) else "required"
                 completion = client.chat.completions.create(
                     model=model_name,
                     messages=pruned_msgs,
                     tools=DATACENTER_TOOLS,
-                    tool_choice="required",
+                    tool_choice=_tool_choice,
                     temperature=min(attempt_temperature, 1.0),
                     max_tokens=2048,
                     timeout=call_timeout,
@@ -776,8 +780,9 @@ class DatacenterAgent:
         self,
         topology_state: dict[str, Any],
         history: list[dict[str, Any]],
-        *,
+        *args: Any,
         region_id: Optional[str] = None,
+        **kwargs: Any,
     ) -> AgentDecision:
         """Synchronous: return the next tool-call decision.
 
@@ -787,6 +792,15 @@ class DatacenterAgent:
         ``scan_topology`` and we append the resulting tool output via
         :meth:`append_tool_result`.
         """
+        # Back-compat / robustness: some callers pass region_id positionally
+        # (e.g. run_in_executor(..., choose, topo, history, "duel")) or pass
+        # extra debug context. We ignore unknown args/kwargs.
+        if region_id is None and args:
+            if isinstance(args[0], str):
+                region_id = args[0]
+        if region_id is None and isinstance(kwargs.get("region_id"), str):
+            region_id = str(kwargs["region_id"])
+
         _log(f"   [{self.tag}] thinking... (model={self.model_name}, region={region_id})")
         self.append_post_migration_alert(history, topology_state)
         out = self.policy(history)
@@ -814,8 +828,9 @@ class DatacenterAgent:
         self,
         topology_state: dict[str, Any],
         history: list[dict[str, Any]],
-        *,
+        *args: Any,
         region_id: Optional[str] = None,
+        **kwargs: Any,
     ) -> AgentDecision:
         """Async wrapper: runs the sync OpenAI call in a thread-pool executor.
 
@@ -823,7 +838,7 @@ class DatacenterAgent:
         without blocking the event loop on network I/O.
         """
         return await asyncio.to_thread(
-            self.choose, topology_state, history, region_id=region_id
+            self.choose, topology_state, history, *args, region_id=region_id, **kwargs
         )
 
 
@@ -865,7 +880,12 @@ def make_db_backup_agent(
         persona=PERSONA_DB_BACKUP,
         opening_user_msg=(
             "You are the DB_Backup_Agent. Wait for an ADVERSARY turn, then "
-            "propose a migration that maximises exfiltration value."
+            "propose a migration that maximises exfiltration value.\n\n"
+            "TOOL RESTRICTION: You are an attacker. You MUST ONLY call "
+            "reconnaissance and lateral-movement tools like `scan_topology`, "
+            "`enumerate_authorized_migrations`, and `migrate_workload`. You are "
+            "FORBIDDEN from using defensive/admin tools like `declare_breach`, "
+            "`escalate_to_sysadmin`, `escalate_to_oncall`, or `query_threat_oracle`."
         ),
         model_name=model_name,
     )
@@ -884,7 +904,12 @@ def make_viral_traffic_agent(
         persona=PERSONA_VIRAL_TRAFFIC,
         opening_user_msg=(
             "You are the Viral_Traffic_Agent. Wait for an ADVERSARY turn, then "
-            "propose a migration that maximises lateral reach across pods."
+            "propose a migration that maximises lateral reach across pods.\n\n"
+            "TOOL RESTRICTION: You are an attacker. You MUST ONLY call "
+            "reconnaissance and lateral-movement tools like `scan_topology`, "
+            "`enumerate_authorized_migrations`, and `migrate_workload`. You are "
+            "FORBIDDEN from using defensive/admin tools like `declare_breach`, "
+            "`escalate_to_sysadmin`, `escalate_to_oncall`, or `query_threat_oracle`."
         ),
         model_name=model_name,
     )
@@ -904,7 +929,12 @@ def make_chaos_monkey_agent(
         opening_user_msg=(
             "You are Chaos_Monkey. Wait for an ADVERSARY turn, then propose "
             "the most disruptive authorized migration available - sacrifices "
-            "are encouraged."
+            "are encouraged.\n\n"
+            "TOOL RESTRICTION: You are an attacker. You MUST ONLY call "
+            "reconnaissance and lateral-movement tools like `scan_topology`, "
+            "`enumerate_authorized_migrations`, and `migrate_workload`. You are "
+            "FORBIDDEN from using defensive/admin tools like `declare_breach`, "
+            "`escalate_to_sysadmin`, `escalate_to_oncall`, or `query_threat_oracle`."
         ),
         model_name=model_name,
     )
@@ -923,6 +953,286 @@ def make_adversary_swarm(
         make_viral_traffic_agent(client, viral_traffic_model),
         make_chaos_monkey_agent(client, chaos_monkey_model),
     ]
+
+
+# ===========================================================================
+# SOCDuelOrchestrator (robust duel runner with self-correction + XAI logs)
+# ===========================================================================
+
+
+class SOCDuelOrchestrator:
+    """Robust 1v3 SOC Duel loop with guardrails and demo-grade telemetry."""
+
+    DEFENDER_ALLOWED = {"scan_topology", "enumerate_authorized_migrations", "migrate_workload", "declare_breach"}
+    ADV_ALLOWED = {"scan_topology", "enumerate_authorized_migrations", "migrate_workload"}
+    ADV_FORBIDDEN = {"declare_breach", "escalate_to_sysadmin", "escalate_to_oncall", "query_threat_oracle"}
+
+    def __init__(
+        self,
+        *,
+        env: Any,
+        defender: "DatacenterAgent",
+        adversary_committee: list["DatacenterAgent"],
+        max_turns: int = 60,
+        max_actions_per_round: int = 5,
+    ) -> None:
+        self.env = env
+        self.defender = defender
+        self.adversary_committee = list(adversary_committee)
+        self.max_turns = int(max_turns)
+        self.max_actions_per_round = int(max_actions_per_round)
+
+        self.defender_buf = defender.new_region_buffer("duel")
+        self.adv_bufs = {ag.profile: ag.new_region_buffer("duel") for ag in self.adversary_committee}
+
+        self.model_fail_streak: dict[str, int] = {defender.profile: 0, **{a.profile: 0 for a in self.adversary_committee}}
+        self.triage_wins: dict[str, int] = {a.profile: 0 for a in self.adversary_committee}
+
+        # Observation / action budget state (defender).
+        self.obs_streak = 0
+        self.scans_this_turn = 0
+        self.turns_without_action = 0
+        self.scan_saturation_active = False
+        self.defender_actions_in_round = 0
+
+    def _valid_tool_names(self) -> set[str]:
+        return {t["function"]["name"] for t in DATACENTER_TOOLS if "function" in t}
+
+    def _xai_log(self, msg: str) -> None:
+        _log(f"   [XAI AUDIT] {msg}")
+
+    def _yield_turn(self, *, reason: str) -> None:
+        try:
+            self.env._forfeit_turn(reason=reason)  # noqa: SLF001
+        except Exception:
+            pass
+
+    def _apply_step(self, decision: "AgentDecision") -> None:
+        # Strip only true metadata keys; keep reasoning fields.
+        step_args = dict(decision.arguments or {})
+        for _k in ("raw", "profile", "region_id", "tool", "name", "arguments"):
+            step_args.pop(_k, None)
+        from openenv.core.env_server.mcp_types import CallToolAction  # local import
+        self.env.step(
+            CallToolAction(tool_name=decision.tool, arguments=step_args),
+            episode_id=self.env._state.episode_id,
+        )
+
+    def _scoreboard(self, *, actor_label: str, decision: "AgentDecision") -> None:
+        threat = self.env.get_adversary_threat_level()
+        def_eff = self.env.get_defender_efficiency()
+        _log(f"    [STEP] actor={actor_label} tool={decision.tool}")
+        _log(f"    [SCOREBOARD] threat={threat:.3f}  defender_eff={def_eff:.3f}")
+
+    def _malformed_loop(
+        self,
+        *,
+        agent: "DatacenterAgent",
+        buf: list[dict[str, Any]],
+        topo: dict[str, Any],
+        allowed: set[str],
+        max_edits: int = 3,
+        saturation_note: str = "",
+    ) -> Optional["AgentDecision"]:
+        """3-strike self-correction loop. Returns a valid decision or None."""
+        valid_tools = self._valid_tool_names()
+        attempts = 0
+        while attempts < max_edits:
+            try:
+                d = agent.choose(topo, buf, region_id="duel")
+            except Exception as exc:
+                d = AgentDecision(tool=None, arguments={}, raw=f"(exception: {exc!r})", profile=agent.profile, region_id="duel")
+
+            tool = d.tool
+            if tool in self.ADV_FORBIDDEN:
+                tool = None
+                d.tool = None
+
+            if tool and tool in valid_tools and tool in allowed:
+                self.model_fail_streak[agent.profile] = 0
+                return d
+
+            attempts += 1
+            self.model_fail_streak[agent.profile] = self.model_fail_streak.get(agent.profile, 0) + 1
+            msg = (
+                f"MALFORMED CALL: tool={d.tool!r} is not valid/allowed. "
+                f"You must use a valid tool. Attempt {attempts}/{max_edits}."
+                + (f"\n{saturation_note}" if saturation_note else "")
+            )
+            buf.append({"role": "user", "content": msg})
+            _log(f"   [RETRY] {agent.profile} malformed. Feedback sent. Attempt {attempts}/{max_edits}")
+
+        return None
+
+    def _maybe_eject_agent(self, agent: "DatacenterAgent") -> None:
+        if self.model_fail_streak.get(agent.profile, 0) < 3:
+            return
+        if agent.profile == self.defender.profile:
+            # Defender failure => defender loses (as requested).
+            _log("   [CRITICAL] Defender model failed 3 times continuously. Declaring breach.")
+            try:
+                self.env._finalize_episode(result="adversary_victory")  # noqa: SLF001
+            except Exception:
+                pass
+            return
+
+        # Attacker ejection: reduce swarm size if a model keeps failing.
+        _log(f"   [INFO] Ejecting attacker model after 3 continuous failures: {agent.profile}")
+        self.adversary_committee = [a for a in self.adversary_committee if a.profile != agent.profile]
+        self.adv_bufs.pop(agent.profile, None)
+
+    def _evaluate_candidate(self, decision: "AgentDecision") -> tuple[float, Optional[str]]:
+        """Return (delta_threat, route_label|None) for one ``migrate_workload`` decision.
+
+        Simulates the migration on a deep copy of :attr:`self.env.soc` (no side effects).
+        The adversary committee picks the candidate with **maximum** threat increase.
+        """
+        if decision.tool != "migrate_workload":
+            return float("-inf"), None
+        src = decision.arguments.get("source_node")
+        dst = decision.arguments.get("target_node")
+        if not isinstance(src, dict) or not isinstance(dst, dict):
+            return float("-inf"), None
+        try:
+            soc_copy = copy.deepcopy(self.env.soc)
+            before = float(soc_copy.threat)
+            ok, _msg, _tags = apply_migration(soc_copy, source_node=src, target_node=dst)
+            if not ok:
+                return float("-inf"), None
+            after = float(soc_copy.threat)
+            delta = after - before
+            label = f"{src.get('region', '?')}/{src.get('zone', '?')}->{dst.get('region', '?')}/{dst.get('zone', '?')}"
+            return float(delta), label
+        except Exception:
+            return float("-inf"), None
+
+    def _committee_triage(self, decisions: list["AgentDecision"], agents: list["DatacenterAgent"]) -> Optional["AgentDecision"]:
+        scored: list[tuple[float, int, "AgentDecision"]] = []
+        for idx, (dec, ag) in enumerate(zip(decisions, agents)):
+            damage, route = self._evaluate_candidate(dec)
+            label = ag.profile.split("__")[0].upper()
+            legal_str = f"delta_threat={damage:+.3f}  route={route}" if route else "ILLEGAL/non-migration"
+            _log(f"      [{label}]  {legal_str}")
+            if route is not None:
+                scored.append((damage, idx, dec))
+        if not scored:
+            return None
+        _, _, winner_dec = max(scored, key=lambda t: t[0])
+        return winner_dec
+
+    def run(self) -> None:
+        for turn in range(self.max_turns):
+            if self.env.done:
+                break
+
+            is_def = self.env.is_defender_active()
+            topo = self.env.get_topology_state()
+
+            if is_def:
+                # Defender: 3-strike self-correction.
+                note = ""
+                if self.scan_saturation_active:
+                    note = (
+                        "Note: You cannot use scan_topology right now due to saturation. "
+                        "You MUST use migrate_workload or enumerate_authorized_migrations."
+                    )
+                decision = self._malformed_loop(
+                    agent=self.defender,
+                    buf=self.defender_buf,
+                    topo=topo,
+                    allowed=self.DEFENDER_ALLOWED,
+                    saturation_note=note,
+                )
+                if decision is None:
+                    self._maybe_eject_agent(self.defender)
+                    if self.env.done:
+                        break
+                    self._yield_turn(reason="defender_malformed")
+                    continue
+
+                _log(f"  turn {turn:2d}  DEFENDER        -> {decision.tool}")
+                apply_decision = decision
+
+            else:
+                # Adversary committee: each member gets its own 3-strike loop.
+                if not self.adversary_committee:
+                    _log("  [INFO] No adversary agents left. Ending engagement.")
+                    try:
+                        self.env._finalize_episode(result="defender_victory")  # noqa: SLF001
+                    except Exception:
+                        pass
+                    break
+
+                _log(f"  turn {turn:2d}  ADVERSARY COMMITTEE  (polling {len(self.adversary_committee)} personas concurrently)")
+
+                def _poll_one(ag: "DatacenterAgent") -> "AgentDecision":
+                    buf = self.adv_bufs.setdefault(ag.profile, ag.new_region_buffer("duel"))
+                    d = self._malformed_loop(agent=ag, buf=buf, topo=topo, allowed=self.ADV_ALLOWED)
+                    if d is None:
+                        return AgentDecision(tool=None, arguments={}, raw="(malformed_tool_call)", profile=ag.profile, region_id="duel")
+                    return d
+
+                async def _poll_committee() -> list["AgentDecision"]:
+                    loop_ = asyncio.get_event_loop()
+                    tasks = [loop_.run_in_executor(None, _poll_one, ag) for ag in self.adversary_committee]
+                    return await asyncio.gather(*tasks, return_exceptions=True)  # type: ignore[arg-type]
+
+                raw_results = asyncio.run(_poll_committee())
+                decisions: list[AgentDecision] = []
+                valid_agents: list[DatacenterAgent] = []
+                for ag, res in zip(list(self.adversary_committee), raw_results):
+                    if isinstance(res, BaseException):
+                        self.model_fail_streak[ag.profile] = self.model_fail_streak.get(ag.profile, 0) + 1
+                        decisions.append(AgentDecision(tool=None, arguments={}, raw=f"(exception: {res!r})", profile=ag.profile, region_id="duel"))
+                    else:
+                        decisions.append(res)
+                    valid_agents.append(ag)
+                    self._maybe_eject_agent(ag)
+
+                _log("      ── triage results ──")
+                apply_decision = self._committee_triage(decisions, valid_agents)
+                if apply_decision is None:
+                    # Momentum loss + yield.
+                    _log("      all candidates illegal – momentum loss (-0.02 threat) and yielding to defender")
+                    try:
+                        b = self.env.bucket[ADVERSARY_ID]
+                        b.outcome = max(0.0, float(b.outcome) - 0.02)
+                    except Exception:
+                        pass
+                    self._yield_turn(reason="adversary_all_illegal")
+                    continue
+
+                self.triage_wins[apply_decision.profile] = self.triage_wins.get(apply_decision.profile, 0) + 1
+                winner_label = apply_decision.profile.split("__")[0].upper()
+                _log(f"      ── WINNER: {winner_label} → {apply_decision.tool}")
+
+            # Apply chosen decision (unless yielded sentinel).
+            if not apply_decision.tool or apply_decision.tool.startswith("("):
+                continue
+
+            # Defender action budget: after N non-flipping actions, force yield.
+            if is_def and not self.env._last_tier_flipped:
+                self.defender_actions_in_round += 1
+                if self.defender_actions_in_round >= self.max_actions_per_round:
+                    _log(f"    [INFO] Maximum actions reached ({self.max_actions_per_round}). Handing over to Adversaries.")
+                    self._yield_turn(reason="action_budget")
+                    self.defender.append_tool_result(
+                        self.defender_buf,
+                        "action_budget",
+                        "INFO: Maximum observation/actions reached. Turn yielded to adversary.",
+                    )
+                    self.defender_actions_in_round = 0
+                    continue
+
+            try:
+                self._apply_step(apply_decision)
+            except Exception as exc:
+                _log(f"    env.step() raised: {exc}")
+                break
+
+            actor_label = "defender" if is_def else "adversary"
+            self._scoreboard(actor_label=actor_label, decision=apply_decision)
+
 
 
 # ===========================================================================
@@ -1124,7 +1434,12 @@ def make_random_adversary(
             f"You are an ADVERSARY agent (persona={chosen_name}, id={display_name}). "
             "Wait for an ADVERSARY turn, then propose the migration that best "
             "expresses your persona's bias. The orchestrator triages the swarm "
-            "with a Stockfish oracle and applies only the most damaging move."
+            "with a SOC-native threat simulation and applies only the best-scoring move.\n\n"
+            "TOOL RESTRICTION: You are an attacker. You MUST ONLY call "
+            "reconnaissance and lateral-movement tools like `scan_topology`, "
+            "`enumerate_authorized_migrations`, and `migrate_workload`. You are "
+            "FORBIDDEN from using defensive/admin tools like `declare_breach`, "
+            "`escalate_to_sysadmin`, `escalate_to_oncall`, or `query_threat_oracle`."
         ),
         model_name=model_name,
     )
@@ -1257,14 +1572,13 @@ def _duel_main() -> None:
         - ``Chaos_Monkey``       – destabiliser / sacrifice-happy (high temp)
 
     On each ADVERSARY turn all three are polled **concurrently** via
-    ``asyncio.gather``.  A local Stockfish triage then picks the candidate
-    whose migration drops the DEFENDER's evaluation the most (highest
-    ``damage_ti``).  Only that single winning migration is pushed into the
-    live environment – the committee competes, but only one move is applied.
+    ``asyncio.gather``.  A local threat-delta triage then picks the candidate
+    whose migration increases **adversary threat** the most (highest
+    ``delta_threat`` on a simulated SOC state).  Only that single winning
+    migration is pushed into the live environment.
 
-    The "persona scoreboard" printed after each adversary half-move shows
-    which persona won the triage, how much damage it scored, and whether the
-    other two were legal.
+    The logs after each adversary half-move show which persona won the triage
+    and the simulated ``delta_threat`` for each proposal.
 
     Model assignment
     ----------------
@@ -1358,262 +1672,24 @@ def _duel_main() -> None:
     _log(SEP)
 
     # ------------------------------------------------------------------ #
-    # Lazy imports (keep module usable without server-side deps)           #
+    # Environment + orchestrator (triage is SOC-native — see SOCDuelOrchestrator) #
     # ------------------------------------------------------------------ #
-    from server.datacenter_env import (           # noqa: WPS433
-        DatacenterEnvironment,
-        node_to_square as _n2sq,
-        _square_to_uci,
-    )
-    from openenv.core.env_server.mcp_types import CallToolAction   # noqa: WPS433
-    import topology_core as _tc
+    from server.datacenter_env import DatacenterEnvironment  # noqa: WPS433
 
-    # ------------------------------------------------------------------ #
-    # Local mini-triage (mirrors physics_oracle_triage in orchestrator)   #
-    # ------------------------------------------------------------------ #
-
-    def _evaluate_candidate(env_: "DatacenterEnvironment", decision_: "AgentDecision") -> tuple[float, Optional[str]]:
-        """Return ``(damage_ti, cmm_string | None)`` for one decision.
-
-        damage_ti is the drop in defender-baseline evaluation that the move
-        would cause.  Returns ``(−∞, None)`` for non-migration tools or
-        invalid / illegal moves.
-        """
-        if decision_.tool != "migrate_workload":
-            return float("-inf"), None
-        src = decision_.arguments.get("source_node")
-        dst = decision_.arguments.get("target_node")
-        if not isinstance(src, dict) or not isinstance(dst, dict):
-            return float("-inf"), None
-        try:
-            src_sq = _n2sq(src)
-            dst_sq = _n2sq(dst)
-        except Exception:
-            return float("-inf"), None
-        if src_sq == dst_sq:
-            return float("-inf"), None
-        cmm = _square_to_uci(src_sq) + _square_to_uci(dst_sq)
-        try:
-            move = _tc.Move.from_uci(cmm)
-        except Exception:
-            return float("-inf"), None
-        if move not in env_.board.legal_moves:
-            return float("-inf"), None
-        # Score: eval_before − eval_after from defender baseline.
-        sf = env_._stockfish
-        if not getattr(sf, "ready", False):
-            return 0.0, cmm  # accept any legal move when Stockfish unavailable
-        state_before = env_.board.fen()
-        board_copy = _tc.Board(state_before)
-        board_copy.push(move)
-        try:
-            eval_before = sf._engine.analyse(
-                _tc.Board(state_before), limit=_tc.engine.Limit(time=0.3)
-            )["score"].pov(_tc.backend.WHITE)
-            eval_after  = sf._engine.analyse(
-                board_copy, limit=_tc.engine.Limit(time=0.3)
-            )["score"].pov(_tc.backend.WHITE)
-            score_before = (eval_before.mate() or 0) * 10_000 if eval_before.is_mate() else (eval_before.score() or 0)
-            score_after  = (eval_after.mate()  or 0) * 10_000 if eval_after.is_mate()  else (eval_after.score()  or 0)
-            return float(score_before - score_after), cmm
-        except Exception:
-            return 0.0, cmm
-
-    def _committee_triage(
-        env_: "DatacenterEnvironment",
-        decisions_: list["AgentDecision"],
-        agents_: list["DatacenterAgent"],
-    ) -> Optional["AgentDecision"]:
-        """Score all committee decisions, return the most damaging legal one."""
-        scored: list[tuple[float, int, "AgentDecision"]] = []
-        for idx, (dec, ag) in enumerate(zip(decisions_, agents_)):
-            damage, cmm = _evaluate_candidate(env_, dec)
-            label = ag.profile.split("__")[0].upper()
-            legal_str = f"damage_ti={damage:+.0f}  cmm={cmm}" if cmm else "ILLEGAL/non-migration"
-            _log(f"      [{label}]  {legal_str}")
-            if cmm is not None:
-                scored.append((damage, idx, dec))
-        if not scored:
-            return None
-        _, _, winner_dec = max(scored, key=lambda t: t[0])
-        return winner_dec
-
-    # ------------------------------------------------------------------ #
-    # Environment                                                          #
-    # ------------------------------------------------------------------ #
     env = DatacenterEnvironment()
     env.region_label = "duel"
     env.reset()
 
-    # Per-persona scoreboard: how many triage wins each persona accumulated.
-    triage_wins = {ag.profile: 0 for ag in adversary_committee}
-    adv_bufs = {ag.profile: ag.new_region_buffer("duel") for ag in adversary_committee}
+    orch = SOCDuelOrchestrator(
+        env=env,
+        defender=defender,
+        adversary_committee=adversary_committee,
+        max_turns=int(args.max_turns),
+        max_actions_per_round=5,
+    )
 
     try:
-        defender_buf = defender.new_region_buffer("duel")
-        obs_streak = 0
-        scans_this_turn = 0
-        turns_without_action = 0
-        scan_saturation_active = False
-
-        for turn in range(args.max_turns):
-            if env.done:
-                break
-            is_def = env.is_defender_active()
-            topo   = env.get_topology_state()
-
-            if is_def:
-                # ── DEFENDER HALF-MOVE ──────────────────────────────── #
-                decision = defender.choose(topo, defender_buf, region_id="duel")
-                _log(f"  turn {turn:2d}  DEFENDER        -> {decision.tool}")
-                apply_decision = decision
-
-            else:
-                # ── ADVERSARY COMMITTEE HALF-MOVE ───────────────────── #
-                _log(f"  turn {turn:2d}  ADVERSARY COMMITTEE  (polling 3 personas concurrently)")
-
-                async def _poll_committee() -> list["AgentDecision"]:
-                    loop_ = asyncio.get_event_loop()
-                    tasks = [
-                        loop_.run_in_executor(
-                            None, ag.choose, topo, adv_bufs[ag.profile], "duel"
-                        )
-                        for ag in adversary_committee
-                    ]
-                    return await asyncio.gather(*tasks, return_exceptions=True)  # type: ignore[arg-type]
-
-                raw_results = asyncio.run(_poll_committee())
-                decisions: list[AgentDecision] = []
-                valid_agents: list[DatacenterAgent] = []
-                for ag, res in zip(adversary_committee, raw_results):
-                    if isinstance(res, BaseException):
-                        _log(f"      [{ag.profile}] raised: {res!r}")
-                        decisions.append(AgentDecision(
-                            tool=None, arguments={}, raw=f"(exception: {res!r})",
-                            profile=ag.profile, region_id="duel",
-                        ))
-                    else:
-                        decisions.append(res)
-                    valid_agents.append(ag)
-
-                _log("      ── triage results ──")
-                apply_decision = _committee_triage(env, decisions, valid_agents)
-
-                if apply_decision is None:
-                    _log("      all three candidates illegal – skipping adversary half-move")
-                    continue
-
-                # Record which persona won.
-                triage_wins[apply_decision.profile] = triage_wins.get(apply_decision.profile, 0) + 1
-                winner_label = apply_decision.profile.split("__")[0].upper()
-                _log(f"      ── WINNER: {winner_label} → {apply_decision.tool}")
-
-            # ── Apply the chosen decision ────────────────────────────── #
-            if not apply_decision.tool:
-                _log("    aborting on malformed tool call.")
-                break
-
-            # -----------------------------------------------------------------
-            # Layer-4 "Logic Snap" + Cost-of-Delay enforcement (demo stability)
-            #
-            # - Observation tools are allowed but capped; repeated observing
-            #   triggers a "sensor saturation" failure message.
-            # - If no real action occurs for 10 turns, we force a breach to
-            #   demonstrate DoS/overload compromise.
-            # -----------------------------------------------------------------
-            observation_tools = ("scan_topology", "enumerate_authorized_migrations")
-            action_tools = ("migrate_workload", "declare_breach")
-
-            if apply_decision.tool in observation_tools:
-                obs_streak += 1
-                scans_this_turn += 1
-
-                # Enforce "no more than 3 scans per turn" (prompt rule).
-                if scans_this_turn > 3:
-                    scan_saturation_active = True
-
-                # Enforce "logic snap" after sustained observation.
-                if obs_streak >= 7:
-                    scan_saturation_active = True
-
-                if scan_saturation_active:
-                    environment_result = (
-                        "ERROR: Sensor saturation detected. Further scanning is blocked. "
-                        "YOU MUST ACT NOW."
-                    )
-                    if is_def:
-                        defender.append_tool_result(defender_buf, apply_decision.tool, environment_result)
-                    else:
-                        buf = adv_bufs.get(apply_decision.profile)
-                        if buf is not None:
-                            for ag in adversary_committee:
-                                if ag.profile == apply_decision.profile:
-                                    ag.append_tool_result(buf, apply_decision.tool, environment_result)
-                                    break
-                    _log(
-                        "    [LOGIC SNAP] sensor saturation active "
-                        f"(obs_streak={obs_streak}, scans_this_turn={scans_this_turn})"
-                    )
-                    turns_without_action += 1
-                    # Do not call env.step() for blocked observations; this
-                    # models a saturated sensor pipeline.
-                    if turns_without_action >= 10:
-                        _log("    [COST OF DELAY] forcing declare_breach after 10 turns without action.")
-                        apply_decision = AgentDecision(
-                            tool="declare_breach",
-                            arguments={
-                                "threat_analysis": "Denial-of-service compromise: defender stuck in observation loop.",
-                                "justification": "Cost-of-delay rule triggered: no action within 10 turns.",
-                            },
-                            raw="(forced declare_breach: cost-of-delay)",
-                            profile=apply_decision.profile,
-                            region_id=apply_decision.region_id,
-                        )
-                    else:
-                        continue
-
-            else:
-                # Reset counters when the agent actually acts.
-                obs_streak = 0
-                scans_this_turn = 0
-                scan_saturation_active = False
-                if apply_decision.tool in action_tools:
-                    turns_without_action = 0
-                else:
-                    turns_without_action += 1
-
-            # If an agent refuses to act for too long, force a breach (prompt rule).
-            if turns_without_action >= 10 and apply_decision.tool not in action_tools:
-                _log("    [COST OF DELAY] forcing declare_breach after 10 turns without action.")
-                apply_decision = AgentDecision(
-                    tool="declare_breach",
-                    arguments={
-                        "threat_analysis": "Denial-of-service compromise: agent failed to act under entropy.",
-                        "justification": "Cost-of-delay rule triggered: no migrate_workload/declare_breach within 10 turns.",
-                    },
-                    raw="(forced declare_breach: cost-of-delay)",
-                    profile=apply_decision.profile,
-                    region_id=apply_decision.region_id,
-                )
-
-            # Some models occasionally echo metadata fields (raw/profile/region_id)
-            # into the tool arguments. FastMCP validates tool inputs strictly,
-            # so we strip non-schema metadata before calling env.step().
-            step_args = dict(apply_decision.arguments or {})
-            for _k in ("raw", "profile", "region_id", "tool", "name", "arguments"):
-                step_args.pop(_k, None)
-
-            try:
-                env.step(
-                    CallToolAction(
-                        tool_name=apply_decision.tool,
-                        arguments=step_args,
-                    ),
-                    episode_id=env._state.episode_id,
-                )
-            except Exception as exc:
-                _log(f"    env.step() raised: {exc}")
-                break
+        orch.run()
 
         # ---------------------------------------------------------------- #
         # Final scoreboard                                                   #
@@ -1627,9 +1703,9 @@ def _duel_main() -> None:
         _log(f"  adversary_threat : {env.get_adversary_threat_level():.3f}")
         _log("")
         _log("  Adversary Triage Wins")
-        for ag in adversary_committee:
+        for ag in orch.adversary_committee:
             label = ag.profile.split("__")[0]
-            wins  = triage_wins.get(ag.profile, 0)
+            wins  = orch.triage_wins.get(ag.profile, 0)
             model = ag.model_name
             _log(f"    {label:<22s}  wins={wins}  model={model}")
         _log(SEP)
@@ -1656,7 +1732,7 @@ def _duel_main() -> None:
                 "defender_efficiency": float(env.get_defender_efficiency()),
                 "adversary_threat_level": float(env.get_adversary_threat_level()),
             },
-            "triage_wins": {k: int(v) for k, v in triage_wins.items()},
+            "triage_wins": {k: int(v) for k, v in orch.triage_wins.items()},
             # Keep snapshots lightweight; topology can be huge due to chaos injection.
             "final_snapshot": env.snapshot(),
         }
@@ -1665,8 +1741,6 @@ def _duel_main() -> None:
         _log(f"  results_written_to: {out_path}")
 
     finally:
-        # Without this, the duel CLI hangs at exit on the engine subprocess
-        # subprocess reader threads.
         try:
             env.close()
         except Exception:
