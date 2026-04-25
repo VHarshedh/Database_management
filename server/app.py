@@ -6,10 +6,9 @@
 
 """FastAPI + WebSocket server for the Datacenter Workload Migration env.
 
-The environment is a re-skinned chess simulation: an LLM agent acts as either
-DEFENDER or ADVERSARY in a Global SOC, migrating workloads across a 4D
-``(region, zone, rack, pod)`` tensor. Internally we still drive python-chess
-+ Stockfish; the adapter layer lives in :mod:`datacenter_env`.
+An LLM agent acts as either DEFENDER or ADVERSARY in a Global SOC, operating on
+4D node coordinates ``(region, zone, rack, pod)``. The environment is driven by
+a custom SOC simulation engine (see :mod:`datacenter_env` and :mod:`soc_sim`).
 """
 
 import json

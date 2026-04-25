@@ -140,7 +140,7 @@ def verify_reasoning_integrity(*, actual_tags: set[str], thought: str) -> tuple[
     if not mentions:
         return False, "No semantic role claims detected."
     for canon, term in mentions:
-        if canon not in actual_tags:
+        if canon not in actual_tags and canon != "workload":
             return True, f"Hallucination: claimed '{canon}' via '{term}', actual tags={sorted(actual_tags)}"
     # If the agent used a synonym (e.g. "sql") we surface it for judge logging.
     for canon, term in mentions:
@@ -368,7 +368,7 @@ class DatacenterEnvironment(MCPEnvironment):
             # Phase 5: surface semantic-auditor verdict immediately.
             is_h, audit_msg = verify_reasoning_integrity(actual_tags=actual_tags, thought=thought)
             if thought and audit_msg:
-                prefix = "[XAI AUDIT] HALLUCINATION DETECTED:" if is_h else "[XAI AUDIT]"
+                prefix = "[Layer 6 Semantic Audit] HALLUCINATION DETECTED:" if is_h else "[Layer 6 Semantic Audit]"
                 _log(f"   {prefix} {audit_msg}")
             total, o, i, s = soc_reward_fn(
                 tier=tier, threat=env.soc.threat, tool_name=tool_name,

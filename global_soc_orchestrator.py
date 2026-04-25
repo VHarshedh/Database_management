@@ -27,6 +27,8 @@ from typing import Any, Optional
 from openenv.core.env_server.mcp_types import CallToolAction
 
 from agent_inference import (
+    ADVERSARY_FORBIDDEN_TOOLS,
+    DATACENTER_TOOLS,
     AgentDecision,
     DatacenterAgent,
     make_chaos_monkey_agent,
@@ -145,6 +147,8 @@ class CycleRecord:
 
 def _score_decision_threat_delta(env: DatacenterEnvironment, d: AgentDecision) -> tuple[bool, float, str]:
     """Return (legal, delta_threat, error_msg)."""
+    if d.tool in ADVERSARY_FORBIDDEN_TOOLS:
+        return False, float("-inf"), f"adversary forbidden tool ({d.tool!r})"
     if d.tool != "migrate_workload":
         return False, float("-inf"), f"non-migration tool ({d.tool!r})"
     args = d.arguments or {}
@@ -162,6 +166,17 @@ def _score_decision_threat_delta(env: DatacenterEnvironment, d: AgentDecision) -
 
 
 class GlobalSOCOrchestrator:
+    """Global multi-region run loop with the same 3-try tool self-correction as SOCDuelOrchestrator."""
+
+    DEFENDER_ALLOWED = {
+        "scan_topology",
+        "enumerate_authorized_migrations",
+        "migrate_workload",
+        "declare_breach",
+    }
+    ADV_ALLOWED = {"scan_topology", "enumerate_authorized_migrations", "migrate_workload"}
+    ADV_FORBIDDEN = set(ADVERSARY_FORBIDDEN_TOOLS)
+
     def __init__(
         self,
         regions: list[RegionRunner],
@@ -198,6 +213,8 @@ class GlobalSOCOrchestrator:
         self.incident_clock_scaling = incident_clock_scaling
         self.hitl_enabled = bool(hitl_enabled) if hitl_enabled is not None else True
         self.concurrency_limit = asyncio.Semaphore(max(1, int(max_concurrent_llm_calls)))
+        # Non-elastic swarm only: drop persistent adversaries after repeated malformed outputs.
+        self._adv_malformed_streak: dict[str, int] = {}
 
         self.audit_trail: list[CycleRecord] = []
 
@@ -237,6 +254,71 @@ class GlobalSOCOrchestrator:
     def _call_env(self, env: DatacenterEnvironment, tool: str, args: dict[str, Any]):
         return env.step(CallToolAction(tool_name=tool, arguments=args))
 
+    @staticmethod
+    def _valid_tool_names() -> set[str]:
+        return {t["function"]["name"] for t in DATACENTER_TOOLS if "function" in t}
+
+    def _malformed_loop(
+        self,
+        *,
+        agent: DatacenterAgent,
+        buf: list[dict[str, Any]],
+        topo: dict[str, Any],
+        allowed: set[str],
+        region_id: str,
+        max_edits: int = 3,
+    ) -> Optional[AgentDecision]:
+        """3-try self-correction for tool/JSON; returns a valid decision or None."""
+        valid_tools = self._valid_tool_names()
+        attempts = 0
+        while attempts < max_edits:
+            try:
+                d = agent.choose(topo, buf, region_id=region_id)
+            except Exception as exc:
+                d = AgentDecision(
+                    tool=None,
+                    arguments={},
+                    raw=f"(exception: {exc!r})",
+                    profile=agent.profile,
+                    region_id=region_id,
+                )
+            tool = d.tool
+            if tool in self.ADV_FORBIDDEN:
+                tool = None
+            if tool and tool in valid_tools and tool in allowed:
+                return AgentDecision(
+                    tool=tool,
+                    arguments=d.arguments or {},
+                    raw=d.raw,
+                    profile=d.profile,
+                    region_id=d.region_id,
+                )
+            attempts += 1
+            buf.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"MALFORMED CALL: tool={d.tool!r} is not valid/allowed. "
+                        f"Use one of: {sorted(allowed)}. Attempt {attempts}/{max_edits}."
+                    ),
+                }
+            )
+            _log(
+                f"   [RETRY] {agent.profile} malformed (region={region_id}). "
+                f"Feedback sent. Attempt {attempts}/{max_edits}"
+            )
+        return None
+
+    @staticmethod
+    def _eject_broken_adversaries(
+        adversaries: list[DatacenterAgent], streak: dict[str, int]
+    ) -> list[DatacenterAgent]:
+        to_drop = {p for p, n in streak.items() if n >= 3}
+        for p in to_drop:
+            _log(f"   [ORCH] dropping adversary after 3 failed rounds: {p!r}")
+            streak.pop(p, None)
+        return [a for a in adversaries if a.profile not in to_drop]
+
     def run(self, *, max_cycles: int = 10) -> None:
         for _ in range(int(max_cycles)):
             for region in self.regions:
@@ -250,11 +332,27 @@ class GlobalSOCOrchestrator:
 
                 rec = CycleRecord(region_id=region.region_id, cycle_index=region.cycle_index)
 
-                # Defender half-turn
-                decision = defender.choose(region.env.get_topology_state(), region.defender_history, region.region_id)
-                rec.defender_decision = decision.to_dict()
-                obs = self._call_env(region.env, decision.tool, decision.arguments)
-                rec.defender_reward = float(getattr(obs, "reward", 0.0) or 0.0)
+                # Defender half-turn (3-try self-correction; on failure, yield to adversary)
+                topo_d = region.env.get_topology_state()
+                decision = self._malformed_loop(
+                    agent=defender,
+                    buf=region.defender_history,
+                    topo=topo_d,
+                    allowed=self.DEFENDER_ALLOWED,
+                    region_id=region.region_id,
+                )
+                if decision is None:
+                    _log("   [ORCH] defender malformed after retries; yielding turn")
+                    rec.defender_decision = None
+                    rec.fallback_used = True
+                    try:
+                        region.env._forfeit_turn(reason="defender_malformed")
+                    except Exception:
+                        pass
+                else:
+                    rec.defender_decision = decision.to_dict()
+                    obs = self._call_env(region.env, decision.tool, decision.arguments)
+                    rec.defender_reward = float(getattr(obs, "reward", 0.0) or 0.0)
 
                 if region.env.done:
                     rec.done = True
@@ -270,16 +368,72 @@ class GlobalSOCOrchestrator:
                     adversaries = self._build_elastic_swarm(swarm_n)
                 else:
                     adversaries = list(self.adversaries)
+                    if not adversaries:
+                        _log("   [TRIAGE] no adversary agents left; skipping adversary step")
+                        rec.fallback_used = True
+                        self.audit_trail.append(rec)
+                        region.cycle_index += 1
+                        continue
+
+                topo_a = region.env.get_topology_state()
 
                 async def _poll_one(a: DatacenterAgent) -> AgentDecision:
                     async with self.concurrency_limit:
-                        return await a.choose_async(
-                            region.env.get_topology_state(),
-                            a.new_region_buffer(region.region_id),
-                            region.region_id,
-                        )
+                        buf = a.new_region_buffer(region.region_id)
 
-                decisions = asyncio.run(asyncio.gather(*[_poll_one(a) for a in adversaries]))
+                        def _work() -> Optional[AgentDecision]:
+                            return self._malformed_loop(
+                                agent=a,
+                                buf=buf,
+                                topo=topo_a,
+                                allowed=self.ADV_ALLOWED,
+                                region_id=region.region_id,
+                            )
+
+                        loop = asyncio.get_running_loop()
+                        d = await loop.run_in_executor(None, _work)
+                        if d is None:
+                            if not self.is_elastic:
+                                self._adv_malformed_streak[a.profile] = (
+                                    self._adv_malformed_streak.get(a.profile, 0) + 1
+                                )
+                            return AgentDecision(
+                                tool=None,
+                                arguments={},
+                                raw="(malformed_tool_call)",
+                                profile=a.profile,
+                                region_id=region.region_id,
+                            )
+                        if not self.is_elastic:
+                            self._adv_malformed_streak.pop(a.profile, None)
+                        return d
+
+                raw = asyncio.run(
+                    asyncio.gather(*[_poll_one(a) for a in adversaries], return_exceptions=True)
+                )
+                decisions: list[AgentDecision] = []
+                for a, res in zip(adversaries, raw, strict=False):
+                    if isinstance(res, BaseException):
+                        if not self.is_elastic:
+                            self._adv_malformed_streak[a.profile] = (
+                                self._adv_malformed_streak.get(a.profile, 0) + 1
+                            )
+                        decisions.append(
+                            AgentDecision(
+                                tool=None,
+                                arguments={},
+                                raw=f"(exception: {res!r})",
+                                profile=a.profile,
+                                region_id=region.region_id,
+                            )
+                        )
+                    else:
+                        decisions.append(res)
+
+                if not self.is_elastic and self.adversaries:
+                    self.adversaries = self._eject_broken_adversaries(
+                        self.adversaries, self._adv_malformed_streak
+                    )
 
                 scored: list[tuple[DatacenterAgent, AgentDecision, bool, float, str]] = []
                 for a, d in zip(adversaries, decisions, strict=False):
@@ -299,6 +453,10 @@ class GlobalSOCOrchestrator:
                 if not legal_scored:
                     _log("   [TRIAGE] ⚠️ SWARM COGNITIVE FAILURE: no legal migrations; yielding turn")
                     rec.fallback_used = True
+                    try:
+                        region.env._forfeit_turn(reason="adversary_all_illegal")
+                    except Exception:
+                        pass
                     self.audit_trail.append(rec)
                     region.cycle_index += 1
                     continue
