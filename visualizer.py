@@ -1,120 +1,242 @@
-"""OpenEnv Datacenter (SOC Duel) run visualizer.
-
-Replaces the old chess/Stockfish visualizer. This visualizer reads OpenEnv
-JSON logs written by the orchestrators/duel runners and plots:
-
-- Threat over time
-- Reward bucket components: Outcome / Integrity / Stealth
-
-Usage:
-
-```bash
-python Datacenter-workload_migration/visualizer.py path/to/run.json
-```
-"""
-
-from __future__ import annotations
-
 import json
 import sys
+import time
+import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Dict, List
+from dataclasses import dataclass
 
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.layout import Layout
+    from rich.live import Live
+    from rich.text import Text
+    from rich.columns import Columns
+    from rich.align import Align
+    from rich.theme import Theme
+except ImportError:
+    print("Error: 'rich' library not found. Please install it with 'pip install rich'.")
+    sys.exit(1)
 
-def _extract_steps(data: dict[str, Any]) -> list[dict[str, Any]]:
-    # Support both shapes:
-    # - {"steps": [...]} (common)
-    # - {"metadata": {"steps": [...]}} (fallback)
-    steps = data.get("steps")
-    if isinstance(steps, list):
-        return [s for s in steps if isinstance(s, dict)]
-    md = data.get("metadata", {})
-    if isinstance(md, dict) and isinstance(md.get("steps"), list):
-        return [s for s in md["steps"] if isinstance(s, dict)]
-    return []
+# Custom theme for SOC Aesthetics
+SOC_THEME = Theme({
+    "layer1": "bold green",
+    "layer3": "bold yellow",
+    "layer5": "bold magenta",
+    "layer6": "bold red",
+    "defender": "cyan",
+    "adversary": "red",
+    "threat_high": "bold red",
+    "threat_med": "yellow",
+    "threat_low": "green",
+    "status_secured": "bold green",
+    "status_compromised": "bold red",
+    "status_active": "cyan",
+})
 
+console = Console(theme=SOC_THEME)
 
-def _get_openenv(md: Any) -> Optional[dict[str, Any]]:
-    if not isinstance(md, dict):
-        return None
-    openenv = md.get("openenv")
-    return openenv if isinstance(openenv, dict) else None
+def get_latest_result() -> Path:
+    results_dir = Path("results")
+    if not results_dir.exists():
+        raise FileNotFoundError("Results directory not found.")
+    
+    files = list(results_dir.glob("soc_orchestrator_*.json"))
+    if not files:
+        raise FileNotFoundError("No SOC result files found in results/.")
+    
+    # Sort by modification time
+    return max(files, key=os.path.getmtime)
 
+def format_node(node: Any) -> str:
+    if not isinstance(node, dict):
+        return "Unknown"
+    return f"{node.get('region','?')}/{node.get('zone','?')}/{node.get('rack','?')}/{node.get('pod','?')}"
 
-def _series_from_steps(steps: list[dict[str, Any]]) -> dict[str, list[float]]:
-    threat: list[float] = []
-    outcome: list[float] = []
-    integrity: list[float] = []
-    stealth: list[float] = []
+def get_layer_info(action: dict) -> str:
+    tool = action.get("tool", "")
+    if tool == "scan_topology":
+        return "[layer1]Layer 1: Sensors Active[/]"
+    if tool == "enumerate_authorized_migrations":
+        return "[layer2]Layer 2: Policy Mapping[/]"
+    if tool == "escalate_to_sysadmin":
+        return "[layer5]Layer 5: HITL Escalation[/]"
+    
+    # Layer 6 Traps (Shadow Nodes)
+    # This might be in the arguments or errors if we had it
+    return ""
 
-    for s in steps:
-        md = s.get("metadata", {})
-        oe = _get_openenv(md) or md  # allow direct-in-metadata payloads too
-        topo = oe.get("topology") if isinstance(oe, dict) else None
-        if isinstance(topo, dict) and isinstance(topo.get("threat"), (int, float)):
-            threat.append(float(topo["threat"]))
-
-        bucket = oe.get("bucket") if isinstance(oe, dict) else None
-        # Prefer defender bucket if present, else take any first.
-        b = None
-        if isinstance(bucket, dict):
-            if "defender" in bucket and isinstance(bucket["defender"], dict):
-                b = bucket["defender"]
+def render_region_bar(regions: List[dict]) -> Table:
+    table = Table.grid(expand=True)
+    for i in range(len(regions)):
+        table.add_column(justify="center", ratio=1)
+    
+    status_panels = []
+    for r in regions:
+        name = r.get("region_name", r.get("region_id", "Unknown"))
+        threat = r.get("scores", {}).get("adversary_threat_level", 0.0)
+        done = r.get("done", False)
+        result = r.get("result", "")
+        
+        threat_color = "threat_low"
+        if threat > 0.7: threat_color = "threat_high"
+        elif threat > 0.4: threat_color = "threat_med"
+        
+        status_text = "ACTIVE"
+        status_style = "status_active"
+        
+        if done:
+            if "adversary" in result.lower():
+                status_text = "COMPROMISED"
+                status_style = "status_compromised"
             else:
-                for v in bucket.values():
-                    if isinstance(v, dict):
-                        b = v
-                        break
-        if isinstance(b, dict):
-            for k, arr in (("outcome", outcome), ("integrity", integrity), ("stealth", stealth)):
-                if isinstance(b.get(k), (int, float)):
-                    arr.append(float(b[k]))
+                status_text = "SECURED"
+                status_style = "status_secured"
+        
+        panel_content = Text.assemble(
+            (f"{name.upper()}\n", "bold"),
+            (f"STATUS: {status_text}\n", status_style),
+            (f"THREAT: {threat*100:.1f}%", threat_color)
+        )
+        status_panels.append(Panel(Align.center(panel_content), border_style=status_style))
+    
+    table.add_row(*status_panels)
+    return table
 
-    return {
-        "threat": threat,
-        "outcome": outcome,
-        "integrity": integrity,
-        "stealth": stealth,
-    }
+def render_cycle_dashboard(cycle_idx: int, regions: List[dict], log_entries: List[Text]) -> Layout:
+    layout = Layout()
+    layout.split_column(
+        Layout(name="header", size=3),
+        Layout(name="status", size=6),
+        Layout(name="log", minimum_size=10)
+    )
+    
+    layout["header"].update(Panel(Align.center(f"GLOBAL SOC SIMULATION - CYCLE {cycle_idx}"), style="bold white on blue"))
+    layout["status"].update(render_region_bar(regions))
+    
+    log_table = Table(box=None, expand=True)
+    log_table.add_column("TELEMETRY LOG", style="dim")
+    for entry in log_entries[-15:]: # Show last 15 entries
+        log_table.add_row(entry)
+    
+    layout["log"].update(Panel(log_table, title="8-LAYER SIMULATION FEED", border_style="blue"))
+    
+    return layout
 
+def visualize(file_path: Optional[str] = None, speed: float = 1.0):
+    if file_path:
+        path = Path(file_path)
+    else:
+        path = get_latest_result()
+    
+    console.print(f"[bold cyan]LOADING SOC DATA FROM:[/] {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    regions_snapshot = data.get("regions", [])
+    audit_trail = data.get("audit_trail", [])
+    
+    log_entries: List[Text] = []
+    
+    # We want to iterate cycle by cycle, but audit_trail is half-moves.
+    # Group them or just iterate? The user wants "mimicking a live replay".
+    # I'll iterate through the audit_trail directly.
+    
+    with Live(console=console, auto_refresh=False) as live:
+        for record in audit_trail:
+            cycle_idx = record.get("cycle_index", 0)
+            region_id = record.get("region_id", "unknown")
+            
+            # Find the region to update threat level in our snapshot (mocking live updates)
+            # In a real replay we'd want the threat level at that specific moment, 
+            # but the snapshot in JSON is usually the FINAL state. 
+            # However, for the visualizer we'll just show the cycle info.
+            
+            # Handle Defender Actions
+            for action in record.get("defender_swarm", []):
+                profile = action.get("profile", "defender")
+                tool = action.get("tool", "")
+                args = action.get("arguments", {})
+                reward = action.get("reward", 0.0)
+                
+                layer_info = get_layer_info(action)
+                entry = Text.assemble(
+                    (f"[{region_id}] ", "dim"),
+                    (f"DEFENDER ({profile}): ", "defender"),
+                    (f"{tool} ", "bold"),
+                )
+                
+                if tool == "migrate_workload":
+                    src = format_node(args.get("source_node"))
+                    dst = format_node(args.get("target_node"))
+                    entry.append(f"{src} -> {dst}", style="bold cyan")
+                
+                if layer_info:
+                    entry.append(" ")
+                    entry.append(Text.from_markup(layer_info))
+                
+                log_entries.append(entry)
+                
+                # Protocol Red Alert
+                if tool == "escalate_to_sysadmin":
+                    live.update(render_cycle_dashboard(cycle_idx, regions_snapshot, log_entries))
+                    live.refresh()
+                    time.sleep(0.5)
+                    alert_panel = Panel(
+                        Align.center("\n[bold blink red]PROTOCOL RED - LAYER 5 HITL ESCALATION[/]\n"),
+                        border_style="bold red",
+                        padding=(1, 2)
+                    )
+                    console.print(alert_panel)
+                    time.sleep(2.0)
 
-def main() -> None:  # pragma: no cover
-    if len(sys.argv) < 2:
-        print("Usage: python visualizer.py path/to/run.json", file=sys.stderr)
-        raise SystemExit(2)
+            # Handle Adversary Actions
+            for action in record.get("adversary_swarm", []):
+                profile = action.get("profile", "adversary")
+                tool = action.get("tool", "")
+                args = action.get("arguments", {})
+                reward = action.get("reward", 0.0)
+                
+                entry = Text.assemble(
+                    (f"[{region_id}] ", "dim"),
+                    (f"ADVERSARY ({profile}): ", "adversary"),
+                    (f"{tool} ", "bold"),
+                )
+                
+                if tool == "migrate_workload":
+                    src = format_node(args.get("source_node"))
+                    dst = format_node(args.get("target_node"))
+                    entry.append(f"{src} -> {dst}", style="bold red")
+                
+                log_entries.append(entry)
 
-    path = Path(sys.argv[1]).expanduser()
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise SystemExit("run.json must be an object")
+            # Highlight Errors/Traps
+            # Adversary candidates might have errors
+            for cand in record.get("adversary_all_candidates", []):
+                err = cand.get("error", "")
+                if err:
+                    if "shadow" in err.lower() or "signature" in err.lower():
+                        log_entries.append(Text(f"!! [Layer 6] SHADOW NODE TRAP DETECTED: {err}", style="layer6"))
+                    elif "rate" in err.lower():
+                        log_entries.append(Text(f"!! [Layer 3] RATE LIMIT EJECTION: {err}", style="layer3"))
 
-    steps = _extract_steps(data)
-    series = _series_from_steps(steps)
+            live.update(render_cycle_dashboard(cycle_idx, regions_snapshot, log_entries))
+            live.refresh()
+            time.sleep(speed)
 
+    console.print("\n[bold green]VISUALIZATION COMPLETE.[/]")
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="SOC Datacenter Simulation Visualizer")
+    parser.add_argument("file", nargs="?", help="Path to the JSON result file")
+    parser.add_argument("--speed", type=float, default=0.5, help="Playback speed (seconds per move)")
+    
+    args = parser.parse_args()
     try:
-        import matplotlib.pyplot as plt  # type: ignore
-    except Exception as exc:
-        raise SystemExit(f"matplotlib required for plotting: {exc}")
-
-    fig, ax = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
-    ax[0].plot(series["threat"], label="threat")
-    ax[0].set_ylabel("Threat")
-    ax[0].legend()
-    ax[0].grid(True, alpha=0.25)
-
-    ax[1].plot(series["outcome"], label="outcome")
-    ax[1].plot(series["integrity"], label="integrity")
-    ax[1].plot(series["stealth"], label="stealth")
-    ax[1].set_ylabel("Reward buckets")
-    ax[1].set_xlabel("Step")
-    ax[1].legend()
-    ax[1].grid(True, alpha=0.25)
-
-    fig.suptitle(f"SOC Duel: {path.name}")
-    plt.tight_layout()
-    plt.show()
-
-
-if __name__ == "__main__":  # pragma: no cover
-    main()
-
+        visualize(args.file, args.speed)
+    except Exception as e:
+        console.print(f"[bold red]FATAL ERROR:[/] {e}")
+        # import traceback; traceback.print_exc()

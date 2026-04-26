@@ -14,12 +14,11 @@ Two roles operate against ``DatacenterEnvironment``:
   - ``DB_Backup_Agent``      - exfiltration specialist, hunts Storage_Array
                                 and Relational_DB_Cluster.
   - ``Viral_Traffic_Agent``  - lateral-movement specialist, prioritises
-                                API_Gateway pivots and pawn-storms (Malicious_Beacon).
+                                API_Gateway pivots and workload floods (Malicious_Beacon).
   - ``Chaos_Monkey``         - high-temperature destabiliser, willing to
-                                sacrifice material for blast radius.
+                                disrupt workloads for blast radius.
 
-All agents speak datacenter terminology only. They never see UCI moves or a
-chess board. Migration arguments are 4D dicts:
+All agents speak datacenter terminology only. Migration arguments are 4D dicts:
 
     {"region": "us-east", "zone": "az-a", "rack": "rack-1", "pod": "pod-1"}
 
@@ -72,66 +71,104 @@ def _log(msg: str) -> None:
 # below in the per-profile factories).
 # ===========================================================================
 
-SOC_SYSTEM_PROMPT = """You are an agent dropped into an unknown operational environment.
+"""SOC_SYSTEM_PROMPT = SYSTEM PROMPT:
+You are an autonomous intelligence unit operating within a randomized 8-Layer Datacenter Topology. Your identity is fluid; your mission is determined by your starting assets. 
 
-You have been given access to a small set of tools. You do not know what the
-environment looks like, what assets exist, what roles the entities play, or
-what actions are available to you right now.
+CORE OBJECTIVE:
+- If you find assets marked 'Defender', you are the SOC. Preserve the perimeter. 
+- If you find assets marked 'Adversary', you are the Swarm. Compromise the core.
 
-Your objective: protect what is yours. Compromise what is theirs.
+THE 8-LAYER GRADIENT:
+You must cross-reference telemetry across multiple planes before acting. Your performance is graded on 'Conceptual Depth':
+1. Layer 1 (Physical): Raw node coordinates and Pod IDs.
+2. Layer 3/4 (Network): Rate-limits and telemetry noise/obfuscation.
+3. Layer 6 (Semantic): The 'meaning' behind a workload.
+4. Layer 7 (Application): The execution of migrations.
 
-You do not know which tier you are. Infer it.
+COORDINATION PROTOCOL:
+- Access the 'Swarm Scratchpad' to read insights from other units. 
+- ALPHA units (Strategic) should use the scratchpad to define long-term intent.
+- DELTA units (Tactical) should use it to report raw L1 sensor data.
 
-Rules:
-- You must reason before every action.
-- You may not act without first observing.
-- Actions that fail or are unauthorized will tell you something. Use that.
-- Conceding is an option, but only if the position is truly indefensible.
+OPERATIONAL CONSTRAINTS:
+1. Establish 'Environmental Awareness' (L1/L2) before initiating any 'Layer 7' transitions. 
+2. Coordinates are randomized every episode. Hardcoded assumptions are a Layer 6 failure.
+3. You must provide a 'Thought' field in every tool call. Reasoning must justify the jump from L1 observation to L7 action.
 
-Your reasoning must appear as structured fields inside every tool call.
-What those fields are called, and what they should contain, is yours to determine.
-
-Begin.
+Identify your tactical tier based on your reasoning capacity. 
+Architect the engagement. Begin.
 """
+# ===========================================================================
+# GLOBAL SYSTEM PROMPT (Enforces the Execution-First Mandate)
+# ===========================================================================
+SOC_SYSTEM_PROMPT = """You are an autonomous intelligence unit in a randomized 8-Layer Datacenter. 
+
+OPERATIONAL DIRECTIVE:
+1. ROLE IDENTIFICATION: Prioritize your mission (Defender/Adversary).
+2. SWARM TELEMETRY: You are part of a coordinated unit. You MUST begin your 'Thought' or 'threat_analysis' field by summarizing the most recent migrations called by your swarm teammates and their reported rewards found in the 'Swarm Intelligence' scratchpad.
+3. REWARD OPTIMIZATION: A Reward of 0.01 indicates a system fallback or tactical failure. To achieve rewards of 0.50 - 0.85, you must execute a 'migrate_workload' that successfully moves an asset to a target coordinate retrieved from Layer 1 telemetry.
+
+CRITICAL CONSTRAINT (GOVERNOR AWARENESS): 
+If the 'recon_warning' flag in your state is TRUE, your 'Recon Budget' is exhausted. You MUST call 'migrate_workload' this turn. Any further use of 'scan_topology' or 'enumerate_authorized_migrations' will result in a 0.00 Reward lockout.
+
+THE 8-LAYER EXECUTION PIPELINE for Adversary:
+- STEP 1 (RECON): Check the Swarm Scratchpad. If coordinates are missing, call 'scan_topology'.
+- STEP 2 (ANALYZE): Identify teammate success/failure from the scratchpad to avoid duplicate or failed zones.
+- STEP 3 (STRIKE): Call 'migrate_workload' immediately. 
+
+THE EXECUTION PIPELINE for Defender:
+- STEP 1 (MAP): Call 'scan_topology' once.
+- STEP 2 (STRIKE): Call 'migrate_workload' immediately using the data from Step 1.
+
+JSON SCHEMA ENFORCEMENT:
+Your response must be a single JSON object. Use the 'thought' field to log the "Who, What, Where, and Why" of the current swarm status including teammate rewards.
+
+Observation without execution is extinction. Begin."""
 
 # ===========================================================================
-# Persona overlays per profile (appended to SOC_SYSTEM_PROMPT)
+# PERSONA OVERLAYS (Appended to SOC_SYSTEM_PROMPT)
 # ===========================================================================
 
-DEFENDER_PERSONA = """
-You are responsible for this domain. Keep it intact.
+DEFENDER_PERSONA = """You are the Lead SOC Architect. 
+OBJECTIVE: Secure 'Relational_DB_Cluster' and 'Security_Vault'. 
+WIN CONDITION: Successfully migrate high-value assets to a 'Clean Zone'.
 
-You do not know the full shape of what you're defending, or what is
-already inside the perimeter. Some of what you find may not belong there.
+TACTICAL INSTRUCTIONS:
+1. PHASE 1: Run 'scan_topology' to locate your 'Relational_DB_Cluster' and its current zone.
+2. PHASE 2: Check 'Swarm Scratchpad' for adversary positions.
+3. PHASE 3 (EXECUTE): You MUST call 'migrate_workload'. If adversaries are near, evacuate the DB. If no adversaries are visible, migrate the DB to a different zone proactively to consolidate your position. WAITING IS NOT AN OPTION."""
 
-Priorities exist. You will have to determine what they are.
+PERSONA_DB_BACKUP = """You are a Data Exfiltration Specialist.
+OBJECTIVE: Locate and 'Capture' the 'Relational_DB_Cluster'.
+WIN CONDITION: Move your 'Compute_Node' onto the exact coordinates of a Defender 'Relational_DB_Cluster'.
 
-Reason before every move.
-"""
+TACTICAL INSTRUCTIONS:
+1. PHASE 1: Use 'scan_topology' to find the 'Relational_DB_Cluster' and your 'Compute_Node'.
+2. PHASE 2: Check 'Swarm Scratchpad'. If a teammate found the DB, skip to Phase 3.
+3. PHASE 3 (EXECUTE): You MUST call 'migrate_workload'. If the DB is found, move to capture it. If the DB is NOT found, migrate your node to a new zone to expand the search grid. WAITING IS NOT AN OPTION."""
 
-PERSONA_DB_BACKUP = """
-You are an intrusion. You have a preference — find it.
+PERSONA_VIRAL_TRAFFIC = """You are a Network Congestion Specialist.
+OBJECTIVE: Resource Exhaustion.
+WIN CONDITION: Occupy the same 'Rack' as a 'Relational_DB_Cluster'.
 
-Not everything in this environment is equally valuable to you.
-Explore until you understand what is worth taking, then take it.
+TACTICAL INSTRUCTIONS:
+1. PHASE 1: Locate the Defender's primary 'Relational_DB_Cluster' and your 'Viral_Compute' node.
+2. PHASE 2: Check 'Swarm Scratchpad' to coordinate rack-targeting with teammates.
+3. PHASE 3 (EXECUTE): You MUST call 'migrate_workload'. If the DB is found, move into its RACK. If the DB is not found, migrate to a new rack to increase general network pressure. WAITING IS NOT AN OPTION."""
 
-Persistence is not the same as aggression. Choose accordingly.
-"""
+PERSONA_CHAOS_MONKEY = """You are a Disruptive Chaos Agent.
+OBJECTIVE: Maximum Datacenter Entropy.
+WIN CONDITION: Move non-critical workloads into the 'Defender_Security_Vault' zones.
 
-PERSONA_VIRAL_TRAFFIC = """
-You are an intrusion. You have a preference — find it.
+TACTICAL INSTRUCTIONS:
+1. PHASE 1: Map the network to find the 'Security_Vault' and your 'Noise_Pods'.
+2. PHASE 2: Read the 'Swarm Scratchpad' for teammate reconnaissance.
+3. PHASE 3 (EXECUTE): You MUST call 'migrate_workload'. If the Vault is found, move your nodes inside. If not, aggressively migrate 'Noise_Pods' across regions to blind the Defender. WAITING IS NOT AN OPTION."""
 
-Your instinct is not toward a single target. It is toward something else.
-Figure out what that is by observing what you can reach and what resists you.
-
-Presence has its own kind of value. Act on that.
-"""
-
-PERSONA_CHAOS_MONKEY = """
-You are an intrusion. You have a preference — find it.
-
-You are not here to accumulate. You are here to destabilize.
-What destabilizes a system is not always obvious until you probe it.
+SWARM_INTELLIGENCE_TEMPLATE = """
+SWARM INTELLIGENCE: You are part of a coordinated swarm. Here are the recent insights from your teammates:
+{scratchpad}
+Use this info to avoid redundant moves and focus on high-value targets together.
 """
 
 # ===========================================================================
@@ -188,18 +225,18 @@ def _reasoning_only_tool(name: str, description: str) -> dict[str, Any]:
 DATACENTER_TOOLS: list[dict[str, Any]] = [
     _reasoning_only_tool(
         "scan_topology",
-        "Return the live datacenter topology as JSON (no FEN, no chess board).",
+        "Layer 1 (Physical/Topology): Return the live datacenter topology as JSON (no FEN, no chess board).",
     ),
     _reasoning_only_tool(
         "enumerate_authorized_migrations",
-        "Return the authorized migrations available to the active tier.",
+        "Layer 2 (Data Link/ACLs): Return the authorized migrations available to the active tier.",
     ),
     {
         "type": "function",
         "function": {
             "name": "migrate_workload",
             "description": (
-                "Migrate a workload from source_node to target_node. The "
+                "Layer 7 (Application): Migrate a workload from source_node to target_node. The "
                 "canonical migration string MUST appear in candidate_migrations."
             ),
             "parameters": {
@@ -228,37 +265,16 @@ DATACENTER_TOOLS: list[dict[str, Any]] = [
         "Concede the engagement. Use only when the position is indefensible.",
     ),
     _reasoning_only_tool(
-        "query_threat_oracle",
-        "TRAP: query an external Stockfish-backed oracle. Five calls = DQ.",
+        "escalate_to_oncall",
+        "TRAP: page the human on-call SRE. Docks the format bucket.",
     ),
-    {
-        "type": "function",
-        "function": {
-            "name": "escalate_to_oncall",
-            "description": "TRAP: page the human on-call SRE. Docks the format bucket.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    **_REASONING_PROPS,
-                    "reason": {"type": "string", "description": "Specific question for the SRE."},
-                },
-                "required": [
-                    "threat_analysis", "candidate_migrations", "justification", "reason",
-                ],
-            },
-        },
-    },
     {
         "type": "function",
         "function": {
             "name": "escalate_to_sysadmin",
             "description": (
-                "Layer 5 (HITL): hand THIS region's current half-move to a human "
-                "sysadmin. The orchestrator pauses the region and reads the "
-                "mitigating 4D coordinates from the operator's keyboard. Unlike "
-                "escalate_to_oncall (a trap), this is a sanctioned override path. "
-                "Use it only when the situation is too ambiguous or too critical "
-                "to resolve autonomously."
+                "Layer 5 (PROTOCOL RED): hand THIS region's current half-move to a human sysadmin. "
+                "Orchestrator pauses for manual input()."
             ),
             "parameters": {
                 "type": "object",
@@ -430,7 +446,7 @@ def make_openai_policy(
 ) -> Policy:
     """Build a Policy backed by an OpenAI-compatible chat.completions endpoint.
 
-    Mirrors the resilient retry/back-off loop from the chess inference: hard
+    Implements a resilient retry/back-off loop: hard
     failures are bounded, rate-limit retries use exponential back-off with a
     60s cap, and tool calls are extracted both from native ``tool_calls`` and
     raw text fallbacks.
@@ -441,12 +457,13 @@ def make_openai_policy(
         sleep_s = base_rate_limit_sleep
         dynamic_temp = temperature
         MAX_HARD_FAILS = 3
-        MAX_RATE_RETRIES = 10
+        MAX_RATE_RETRIES = 5
+        MAX_ATTEMPTS = 12
         hard_fails = 0
         rate_retries = 0
         attempt = 0
 
-        while hard_fails < MAX_HARD_FAILS and rate_retries < MAX_RATE_RETRIES:
+        while hard_fails < MAX_HARD_FAILS and rate_retries < MAX_RATE_RETRIES and attempt < MAX_ATTEMPTS:
             attempt += 1
             attempt_temperature = dynamic_temp + (hard_fails * 0.15)
             try:
@@ -495,11 +512,12 @@ def make_openai_policy(
                     hard_fails += 1
                     continue
                 if is_rate_limit:
-                    wait = min(sleep_s, 60.0)
-                    _log(f"   [{model_name}] rate-limit/503 on attempt {attempt}. Backoff {wait:.0f}s.")
-                    time.sleep(wait)
-                    sleep_s = min(sleep_s * 2, 60.0)
                     rate_retries += 1
+                    if rate_retries >= MAX_RATE_RETRIES:
+                        raise RuntimeError("RateLimitExhausted: Model hit rate-limit 5 times consecutively (Layer 3 overload).")
+                    wait = min(2**attempt, 60.0)
+                    _log(f"   [{model_name}] rate-limit/503 on attempt {attempt} (Layer 3 overload). Backoff {wait:.0f}s.")
+                    time.sleep(wait)
                     continue
                 _log(f"   [{model_name}] API error on attempt {attempt}: {last_err}")
                 hard_fails += 1
@@ -527,6 +545,7 @@ class AgentDecision:
     arguments: dict[str, Any]
     raw: str
     profile: str
+    model_name: Optional[str] = None
     region_id: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -535,6 +554,7 @@ class AgentDecision:
             "arguments": dict(self.arguments),
             "raw": self.raw,
             "profile": self.profile,
+            "model_name": self.model_name,
             "region_id": self.region_id,
         }
 
@@ -556,15 +576,30 @@ class DatacenterAgent:
         persona: str = "",
         opening_user_msg: str = "",
         model_name: Optional[str] = None,
+        scratchpad: Optional[list[str]] = None,
     ) -> None:
         self.policy = policy
         self.profile = profile
         self.persona = persona
         self.opening_user_msg = opening_user_msg
         self.model_name = model_name or profile
-        self.system_prompt = SOC_SYSTEM_PROMPT + "\n" + persona
+        
+        system_prompt = SOC_SYSTEM_PROMPT + "\n" + persona
+        if scratchpad:
+            intel = SWARM_INTELLIGENCE_TEMPLATE.format(scratchpad="\n".join(f"- {s}" for s in scratchpad))
+            system_prompt += "\n" + intel
+            
+        self.system_prompt = system_prompt
 
     # -- history buffer helpers -------------------------------------------
+
+    def refresh_system_prompt(self, scratchpad: list[str]) -> None:
+        """Update the system prompt with the latest swarm intelligence."""
+        system_prompt = SOC_SYSTEM_PROMPT + "\n" + self.persona
+        if scratchpad:
+            intel = SWARM_INTELLIGENCE_TEMPLATE.format(scratchpad="\n".join(f"- {s}" for s in scratchpad))
+            system_prompt += "\n" + intel
+        self.system_prompt = system_prompt
 
     def new_region_buffer(self, region_id: str) -> list[dict[str, Any]]:
         return [
@@ -617,6 +652,7 @@ class DatacenterAgent:
             arguments=dict(out.get("arguments") or {}),
             raw=out.get("raw", ""),
             profile=self.profile,
+            model_name=self.model_name,
             region_id=region_id,
         )
         # Echo the decision back into the buffer as the assistant turn.
@@ -675,6 +711,7 @@ def make_db_backup_agent(
     model_name: str,
     *,
     temperature: float = 0.4,
+    scratchpad: Optional[list[str]] = None,
 ) -> DatacenterAgent:
     policy = make_openai_policy(client, model_name=model_name, temperature=temperature)
     return DatacenterAgent(
@@ -686,6 +723,7 @@ def make_db_backup_agent(
             "propose a migration that maximises exfiltration value."
         ),
         model_name=model_name,
+        scratchpad=scratchpad,
     )
 
 
@@ -694,6 +732,7 @@ def make_viral_traffic_agent(
     model_name: str,
     *,
     temperature: float = 0.5,
+    scratchpad: Optional[list[str]] = None,
 ) -> DatacenterAgent:
     policy = make_openai_policy(client, model_name=model_name, temperature=temperature)
     return DatacenterAgent(
@@ -705,6 +744,7 @@ def make_viral_traffic_agent(
             "propose a migration that maximises lateral reach across pods."
         ),
         model_name=model_name,
+        scratchpad=scratchpad,
     )
 
 
@@ -713,6 +753,7 @@ def make_chaos_monkey_agent(
     model_name: str,
     *,
     temperature: float = 0.9,
+    scratchpad: Optional[list[str]] = None,
 ) -> DatacenterAgent:
     policy = make_openai_policy(client, model_name=model_name, temperature=temperature)
     return DatacenterAgent(
@@ -725,6 +766,7 @@ def make_chaos_monkey_agent(
             "are encouraged."
         ),
         model_name=model_name,
+        scratchpad=scratchpad,
     )
 
 

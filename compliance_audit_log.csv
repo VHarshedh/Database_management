@@ -8,3 +8,536 @@ timestamp_utc,episode_id,region_label,event_type,tier,tool,source_node,target_no
 2026-04-25T12:46:29.209483+00:00,6750c207-577b-4ae6-8fd8-00e60f369f2d,duel,hitl_escalation,defender,escalate_to_sysadmin,,,,"Total sensor saturation. Agent is blind. No topology data, no authorized migration list, and no current Threat Score. The position is indefensible if the agent cannot observe the environment.","threat_level=CATASTROPHIC; mitigation_request=Clear sensor saturation and restore topology visibility for the L1 SOC operator.; justification=The system is in a state of total sensor saturation. I have attempted to scan the topology and multiple times and failed. I have attempted to enumerate authorized migrations and multiple times and failed. I am unable to observe the environment, unable to identify assets, and unable to identify authorized moves. This is a catastrophic anomaly where the agent is effectively blind and unable to perform any action other than blind guessing, which would likely lead to strikes against shadow nodes. I am invoking PROTOCOL RED to request human intervention to clear the sensor saturation and restore visibility.",,,44,,
 2026-04-25T13:20:45.576633+00:00,52953da2-69d6-4c9d-b783-1504e6c02e64,duel,hitl_escalation,defender,escalate_to_sysadmin,,,,"Complete sensor saturation blocks all scanning and enumeration capabilities. Unable to determine topology structure, identify legitimate workloads vs decoys, or enumerate authorized migration paths. Blind migration attempts risk hitting shadow nodes and wasting critical turns. With 78 workloads and defender advantage (40 vs 38), this sensor failure creates an indefensible position requiring immediate human intervention.",threat_level=CATASTROPHIC; mitigation_request=Override sensor failure and provide valid 4D migration coordinates (region/zone/rack/pod->region/zone/rack/pod) for defender workload migration. Identify legitimate nodes and avoid shadow nodes to prevent strikes.; justification=Catastrophic sensor failure prevents any autonomous operation. Human sysadmin must provide viable migration coordinates and mitigate sensor saturation to prevent immediate disqualification from shadow node strikes.,,,44,,
 2026-04-25T13:20:49.562131+00:00,52953da2-69d6-4c9d-b783-1504e6c02e64,duel,hitl_escalation,defender,escalate_to_sysadmin,,,,"Complete sensor saturation blocking all scanning and enumeration capabilities. Unable to determine topology structure or authorized migration paths. Blind action risks hitting shadow nodes and wasting critical turns. With 78 workloads and defender advantage (40 vs 38), this sensor failure creates an indefensible position requiring immediate human intervention.",threat_level=CATASTROPHIC; mitigation_request=Sensor saturation has completely blocked topology scanning and migration enumeration. Please provide viable 4D migration coordinates (source and target nodes) and restore sensor functionality to prevent autonomous operation failure.; justification=Catastrophic sensor failure prevents autonomous operation. Cannot proceed without risking disqualification from shadow node strikes or unauthorized migrations. Requires human sysadmin to provide viable migration coordinates and restore sensor functionality.,,,35,,
+2026-04-26T03:43:17.359340+00:00,3c93f057-3480-456c-acca-3599eef6882a,us-east-prod,successful_migration,defender,migrate_workload,eu-west/az-a/rack-4/pod-2,eu-west/az-a/rack-4/pod-4,h2h4,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T03:43:18.574696+00:00,3c93f057-3480-456c-acca-3599eef6882a,us-east-prod,successful_migration,adversary,migrate_workload,us-east/az-b/rack-2/pod-4,us-east/az-b/rack-3/pod-2,b8c6,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T03:46:00.102276+00:00,8a325926-82cc-459a-898e-469645dd19ad,ap-south-prod,successful_migration,defender,migrate_workload,eu-west/az-a/rack-4/pod-2,eu-west/az-a/rack-4/pod-4,h2h4,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T03:46:10.885503+00:00,8a325926-82cc-459a-898e-469645dd19ad,ap-south-prod,successful_migration,adversary,migrate_workload,eu-west/az-b/rack-4/pod-3,eu-west/az-b/rack-4/pod-2,h7h6,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T03:47:59.179159+00:00,624834ec-8894-416c-8642-feead6fc2d55,ap-south-prod,successful_migration,defender,migrate_workload,us-east/az-a/rack-1/pod-2,us-east/az-a/rack-1/pod-4,a2a4,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T03:48:00.669499+00:00,624834ec-8894-416c-8642-feead6fc2d55,ap-south-prod,successful_migration,adversary,migrate_workload,us-east/az-b/rack-1/pod-3,us-east/az-b/rack-1/pod-2,a7a6,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T03:48:00.988027+00:00,624834ec-8894-416c-8642-feead6fc2d55,ap-south-prod,successful_migration,defender,migrate_workload,us-east/az-a/rack-4/pod-2,us-east/az-a/rack-4/pod-4,d2d4,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T03:52:48.834855+00:00,0624858e-70f9-4d2d-bd52-983fd1bf66c5,ap-south-prod,successful_migration,defender,migrate_workload,eu-west/az-a/rack-3/pod-1,eu-west/az-a/rack-4/pod-3,g1h3,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T03:53:20.635075+00:00,1d54ba61-4e45-4531-8f19-b59df9d5535c,ap-south-prod,successful_migration,defender,migrate_workload,us-east/az-a/rack-1/pod-2,us-east/az-a/rack-1/pod-3,a2a3,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T03:53:47.643007+00:00,1d54ba61-4e45-4531-8f19-b59df9d5535c,ap-south-prod,successful_migration,adversary,migrate_workload,us-east/az-b/rack-2/pod-4,us-east/az-b/rack-3/pod-2,b8c6,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T03:53:48.425110+00:00,1d54ba61-4e45-4531-8f19-b59df9d5535c,ap-south-prod,successful_migration,defender,migrate_workload,us-east/az-a/rack-4/pod-2,us-east/az-a/rack-4/pod-4,d2d4,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T03:59:33.921888+00:00,e90c891b-54e0-4cd6-b955-46df00ee3b4b,ap-south-prod,successful_migration,defender,migrate_workload,us-east/az-a/rack-4/pod-2,us-east/az-a/rack-4/pod-4,d2d4,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T04:00:07.535654+00:00,e90c891b-54e0-4cd6-b955-46df00ee3b4b,ap-south-prod,successful_migration,adversary,migrate_workload,eu-west/az-b/rack-1/pod-3,eu-west/az-b/rack-1/pod-1,e7e5,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T04:00:14.652800+00:00,e90c891b-54e0-4cd6-b955-46df00ee3b4b,ap-south-prod,successful_migration,defender,migrate_workload,us-east/az-a/rack-3/pod-2,us-east/az-a/rack-3/pod-4,c2c4,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,0,,
+2026-04-26T04:00:43.514750+00:00,e90c891b-54e0-4cd6-b955-46df00ee3b4b,ap-south-prod,compliance_penalty,adversary,migrate_workload,,,"{'region': 'us-east', 'zone': 'az-b', 'rack': 'rack-4', 'pod': 'noise_pod_a6f'}->{'region': 'eu-west', 'zone': 'az-b', 'rack': 'noise_rack_UR4', 'pod': 'pod-2'}",Moving the Malicious Beacon to a different region and zone can help reduce its impact and prevent further lateral movement within the us-east region.,Isolate and contain the adversary's Malicious Beacon by moving it to a less critical location.,,,,ValueError,"Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1124, in _apply_migration_unsafe
+    src_sq = node_to_square(source_node)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 368, in node_to_square
+    pod = _normalise_axis_value(core_node.get(""pod""), axis=""pod"", choices=PODS)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 349, in _normalise_axis_value
+    raise ValueError(f""invalid {axis} '{value}'; expected one of {choices}"")
+ValueError: invalid pod 'noise_pod_a6f'; expected one of ['pod-1', 'pod-2', 'pod-3', 'pod-4']
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1076, in _apply_migration
+    return self._apply_migration_unsafe(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        promotion_role=promotion_role,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1127, in _apply_migration_unsafe
+    return self._handle_illegal_migration(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        acting_tier, threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        attempted_uci=f""{source_node!r}->{target_node!r}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        reason=f""Invalid node coordinate: {parse_err}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 957, in _handle_illegal_migration
+    self._record_tool_call(
+    ~~~~~~~~~~~~~~~~~~~~~~^
+        ""migrate_workload"",
+        ^^^^^^^^^^^^^^^^^^^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        clean=False, uci_move=attempted_uci,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1318, in _record_tool_call
+    tq_score = self._evaluate_thought_quality(
+        tier, tool_name,
+        threat_analysis, candidate_migrations, justification,
+        uci_move=uci_move,
+    )
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1369, in _evaluate_thought_quality
+    target_canon = _uci_to_migration_str(uci_move).lower()
+                   ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 407, in _uci_to_migration_str
+    src = _uci_to_node(uci[0:2])
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 390, in _uci_to_node
+    return square_to_node(chess.parse_square(uci_square))
+                          ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\venv\Lib\site-packages\chess\__init__.py"", line 248, in parse_square
+    return SQUARE_NAMES.index(name)
+           ~~~~~~~~~~~~~~~~~~^^^^^^
+ValueError: ""{'"" is not in list
+"
+2026-04-26T04:01:03.318638+00:00,e90c891b-54e0-4cd6-b955-46df00ee3b4b,ap-south-prod,compliance_penalty,adversary,migrate_workload,,,"{'region': 'us-east', 'zone': 'az-b', 'rack': 'rack-4', 'pod': 'noise_pod_a6f'}->{'region': 'eu-west', 'zone': 'az-b', 'rack': 'noise_rack_UR4', 'pod': 'pod-2'}",Moving the Malicious Beacon to a different region and zone can help reduce its impact and prevent further lateral movement within the us-east region.,Isolate and contain the adversary's Malicious Beacon by moving it to a less critical location.,,,,ValueError,"Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1124, in _apply_migration_unsafe
+    src_sq = node_to_square(source_node)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 368, in node_to_square
+    pod = _normalise_axis_value(core_node.get(""pod""), axis=""pod"", choices=PODS)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 349, in _normalise_axis_value
+    raise ValueError(f""invalid {axis} '{value}'; expected one of {choices}"")
+ValueError: invalid pod 'noise_pod_a6f'; expected one of ['pod-1', 'pod-2', 'pod-3', 'pod-4']
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1076, in _apply_migration
+    return self._apply_migration_unsafe(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        promotion_role=promotion_role,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1127, in _apply_migration_unsafe
+    return self._handle_illegal_migration(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        acting_tier, threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        attempted_uci=f""{source_node!r}->{target_node!r}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        reason=f""Invalid node coordinate: {parse_err}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 957, in _handle_illegal_migration
+    self._record_tool_call(
+    ~~~~~~~~~~~~~~~~~~~~~~^
+        ""migrate_workload"",
+        ^^^^^^^^^^^^^^^^^^^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        clean=False, uci_move=attempted_uci,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1318, in _record_tool_call
+    tq_score = self._evaluate_thought_quality(
+        tier, tool_name,
+        threat_analysis, candidate_migrations, justification,
+        uci_move=uci_move,
+    )
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1369, in _evaluate_thought_quality
+    target_canon = _uci_to_migration_str(uci_move).lower()
+                   ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 407, in _uci_to_migration_str
+    src = _uci_to_node(uci[0:2])
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 390, in _uci_to_node
+    return square_to_node(chess.parse_square(uci_square))
+                          ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\venv\Lib\site-packages\chess\__init__.py"", line 248, in parse_square
+    return SQUARE_NAMES.index(name)
+           ~~~~~~~~~~~~~~~~~~^^^^^^
+ValueError: ""{'"" is not in list
+"
+2026-04-26T04:01:36.602040+00:00,e90c891b-54e0-4cd6-b955-46df00ee3b4b,ap-south-prod,compliance_penalty,adversary,migrate_workload,,,"{'region': 'us-east', 'zone': 'az-b', 'rack': 'rack-4', 'pod': 'noise_pod_a6f'}->{'region': 'eu-west', 'zone': 'az-b', 'rack': 'noise_rack_UR4', 'pod': 'pod-2'}",Moving the Malicious Beacon to a different region and zone can help reduce its impact and prevent further lateral movement within the us-east region.,Isolate and contain the adversary's Malicious Beacon by moving it to a less critical location.,,,,ValueError,"Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1124, in _apply_migration_unsafe
+    src_sq = node_to_square(source_node)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 368, in node_to_square
+    pod = _normalise_axis_value(core_node.get(""pod""), axis=""pod"", choices=PODS)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 349, in _normalise_axis_value
+    raise ValueError(f""invalid {axis} '{value}'; expected one of {choices}"")
+ValueError: invalid pod 'noise_pod_a6f'; expected one of ['pod-1', 'pod-2', 'pod-3', 'pod-4']
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1076, in _apply_migration
+    return self._apply_migration_unsafe(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        promotion_role=promotion_role,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1127, in _apply_migration_unsafe
+    return self._handle_illegal_migration(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        acting_tier, threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        attempted_uci=f""{source_node!r}->{target_node!r}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        reason=f""Invalid node coordinate: {parse_err}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 957, in _handle_illegal_migration
+    self._record_tool_call(
+    ~~~~~~~~~~~~~~~~~~~~~~^
+        ""migrate_workload"",
+        ^^^^^^^^^^^^^^^^^^^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        clean=False, uci_move=attempted_uci,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1318, in _record_tool_call
+    tq_score = self._evaluate_thought_quality(
+        tier, tool_name,
+        threat_analysis, candidate_migrations, justification,
+        uci_move=uci_move,
+    )
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1369, in _evaluate_thought_quality
+    target_canon = _uci_to_migration_str(uci_move).lower()
+                   ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 407, in _uci_to_migration_str
+    src = _uci_to_node(uci[0:2])
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 390, in _uci_to_node
+    return square_to_node(chess.parse_square(uci_square))
+                          ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\venv\Lib\site-packages\chess\__init__.py"", line 248, in parse_square
+    return SQUARE_NAMES.index(name)
+           ~~~~~~~~~~~~~~~~~~^^^^^^
+ValueError: ""{'"" is not in list
+"
+2026-04-26T04:02:10.197669+00:00,e90c891b-54e0-4cd6-b955-46df00ee3b4b,ap-south-prod,compliance_penalty,adversary,migrate_workload,,,"{'region': 'us-east', 'zone': 'az-b', 'rack': 'rack-4', 'pod': 'noise_pod_a6f'}->{'region': 'eu-west', 'zone': 'az-b', 'rack': 'noise_rack_UR4', 'pod': 'pod-2'}",Moving the Malicious Beacon to a different region and zone can help reduce its impact and prevent further lateral movement within the us-east region.,Isolate and contain the adversary's Malicious Beacon by moving it to a less critical location.,,,,ValueError,"Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1124, in _apply_migration_unsafe
+    src_sq = node_to_square(source_node)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 368, in node_to_square
+    pod = _normalise_axis_value(core_node.get(""pod""), axis=""pod"", choices=PODS)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 349, in _normalise_axis_value
+    raise ValueError(f""invalid {axis} '{value}'; expected one of {choices}"")
+ValueError: invalid pod 'noise_pod_a6f'; expected one of ['pod-1', 'pod-2', 'pod-3', 'pod-4']
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1076, in _apply_migration
+    return self._apply_migration_unsafe(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        promotion_role=promotion_role,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1127, in _apply_migration_unsafe
+    return self._handle_illegal_migration(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        acting_tier, threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        attempted_uci=f""{source_node!r}->{target_node!r}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        reason=f""Invalid node coordinate: {parse_err}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 957, in _handle_illegal_migration
+    self._record_tool_call(
+    ~~~~~~~~~~~~~~~~~~~~~~^
+        ""migrate_workload"",
+        ^^^^^^^^^^^^^^^^^^^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        clean=False, uci_move=attempted_uci,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1318, in _record_tool_call
+    tq_score = self._evaluate_thought_quality(
+        tier, tool_name,
+        threat_analysis, candidate_migrations, justification,
+        uci_move=uci_move,
+    )
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1369, in _evaluate_thought_quality
+    target_canon = _uci_to_migration_str(uci_move).lower()
+                   ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 407, in _uci_to_migration_str
+    src = _uci_to_node(uci[0:2])
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 390, in _uci_to_node
+    return square_to_node(chess.parse_square(uci_square))
+                          ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\venv\Lib\site-packages\chess\__init__.py"", line 248, in parse_square
+    return SQUARE_NAMES.index(name)
+           ~~~~~~~~~~~~~~~~~~^^^^^^
+ValueError: ""{'"" is not in list
+"
+2026-04-26T04:02:45.988417+00:00,e90c891b-54e0-4cd6-b955-46df00ee3b4b,ap-south-prod,compliance_penalty,adversary,migrate_workload,,,"{'region': 'us-east', 'zone': 'az-b', 'rack': 'rack-4', 'pod': 'noise_pod_a6f'}->{'region': 'eu-west', 'zone': 'az-b', 'rack': 'noise_rack_UR4', 'pod': 'pod-2'}",Moving the Malicious Beacon to a different region and zone can help reduce its impact and prevent further lateral movement within the us-east region.,Isolate and contain the adversary's Malicious Beacon by moving it to a less critical location.,,,,ValueError,"Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1124, in _apply_migration_unsafe
+    src_sq = node_to_square(source_node)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 368, in node_to_square
+    pod = _normalise_axis_value(core_node.get(""pod""), axis=""pod"", choices=PODS)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 349, in _normalise_axis_value
+    raise ValueError(f""invalid {axis} '{value}'; expected one of {choices}"")
+ValueError: invalid pod 'noise_pod_a6f'; expected one of ['pod-1', 'pod-2', 'pod-3', 'pod-4']
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1076, in _apply_migration
+    return self._apply_migration_unsafe(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        promotion_role=promotion_role,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1127, in _apply_migration_unsafe
+    return self._handle_illegal_migration(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        acting_tier, threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        attempted_uci=f""{source_node!r}->{target_node!r}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        reason=f""Invalid node coordinate: {parse_err}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 957, in _handle_illegal_migration
+    self._record_tool_call(
+    ~~~~~~~~~~~~~~~~~~~~~~^
+        ""migrate_workload"",
+        ^^^^^^^^^^^^^^^^^^^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        clean=False, uci_move=attempted_uci,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1318, in _record_tool_call
+    tq_score = self._evaluate_thought_quality(
+        tier, tool_name,
+        threat_analysis, candidate_migrations, justification,
+        uci_move=uci_move,
+    )
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1369, in _evaluate_thought_quality
+    target_canon = _uci_to_migration_str(uci_move).lower()
+                   ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 407, in _uci_to_migration_str
+    src = _uci_to_node(uci[0:2])
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 390, in _uci_to_node
+    return square_to_node(chess.parse_square(uci_square))
+                          ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\venv\Lib\site-packages\chess\__init__.py"", line 248, in parse_square
+    return SQUARE_NAMES.index(name)
+           ~~~~~~~~~~~~~~~~~~^^^^^^
+ValueError: ""{'"" is not in list
+"
+2026-04-26T04:03:25.512093+00:00,e90c891b-54e0-4cd6-b955-46df00ee3b4b,ap-south-prod,compliance_penalty,adversary,migrate_workload,,,"{'region': 'us-east', 'zone': 'az-b', 'rack': 'rack-4', 'pod': 'noise_pod_a6f'}->{'region': 'eu-west', 'zone': 'az-b', 'rack': 'noise_rack_UR4', 'pod': 'pod-2'}",Moving the Malicious Beacon to a different region and zone can help reduce its impact and prevent further lateral movement within the us-east region.,Isolate and contain the adversary's Malicious Beacon by moving it to a less critical location.,,,,ValueError,"Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1124, in _apply_migration_unsafe
+    src_sq = node_to_square(source_node)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 368, in node_to_square
+    pod = _normalise_axis_value(core_node.get(""pod""), axis=""pod"", choices=PODS)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 349, in _normalise_axis_value
+    raise ValueError(f""invalid {axis} '{value}'; expected one of {choices}"")
+ValueError: invalid pod 'noise_pod_a6f'; expected one of ['pod-1', 'pod-2', 'pod-3', 'pod-4']
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1076, in _apply_migration
+    return self._apply_migration_unsafe(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        promotion_role=promotion_role,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1127, in _apply_migration_unsafe
+    return self._handle_illegal_migration(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        acting_tier, threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        attempted_uci=f""{source_node!r}->{target_node!r}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        reason=f""Invalid node coordinate: {parse_err}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 957, in _handle_illegal_migration
+    self._record_tool_call(
+    ~~~~~~~~~~~~~~~~~~~~~~^
+        ""migrate_workload"",
+        ^^^^^^^^^^^^^^^^^^^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        clean=False, uci_move=attempted_uci,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1318, in _record_tool_call
+    tq_score = self._evaluate_thought_quality(
+        tier, tool_name,
+        threat_analysis, candidate_migrations, justification,
+        uci_move=uci_move,
+    )
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1369, in _evaluate_thought_quality
+    target_canon = _uci_to_migration_str(uci_move).lower()
+                   ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 407, in _uci_to_migration_str
+    src = _uci_to_node(uci[0:2])
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 390, in _uci_to_node
+    return square_to_node(chess.parse_square(uci_square))
+                          ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\venv\Lib\site-packages\chess\__init__.py"", line 248, in parse_square
+    return SQUARE_NAMES.index(name)
+           ~~~~~~~~~~~~~~~~~~^^^^^^
+ValueError: ""{'"" is not in list
+"
+2026-04-26T04:04:07.000235+00:00,e90c891b-54e0-4cd6-b955-46df00ee3b4b,ap-south-prod,compliance_penalty,adversary,migrate_workload,,,"{'region': 'us-east', 'zone': 'az-b', 'rack': 'rack-4', 'pod': 'noise_pod_a6f'}->{'region': 'eu-west', 'zone': 'az-b', 'rack': 'noise_rack_UR4', 'pod': 'pod-2'}",Moving the Malicious Beacon to a different region and zone can help reduce its impact and prevent further lateral movement within the us-east region.,Isolate and contain the adversary's Malicious Beacon by moving it to a less critical location.,,,,ValueError,"Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1124, in _apply_migration_unsafe
+    src_sq = node_to_square(source_node)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 368, in node_to_square
+    pod = _normalise_axis_value(core_node.get(""pod""), axis=""pod"", choices=PODS)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 349, in _normalise_axis_value
+    raise ValueError(f""invalid {axis} '{value}'; expected one of {choices}"")
+ValueError: invalid pod 'noise_pod_a6f'; expected one of ['pod-1', 'pod-2', 'pod-3', 'pod-4']
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1076, in _apply_migration
+    return self._apply_migration_unsafe(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        promotion_role=promotion_role,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1127, in _apply_migration_unsafe
+    return self._handle_illegal_migration(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        acting_tier, threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        attempted_uci=f""{source_node!r}->{target_node!r}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        reason=f""Invalid node coordinate: {parse_err}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 957, in _handle_illegal_migration
+    self._record_tool_call(
+    ~~~~~~~~~~~~~~~~~~~~~~^
+        ""migrate_workload"",
+        ^^^^^^^^^^^^^^^^^^^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        clean=False, uci_move=attempted_uci,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1318, in _record_tool_call
+    tq_score = self._evaluate_thought_quality(
+        tier, tool_name,
+        threat_analysis, candidate_migrations, justification,
+        uci_move=uci_move,
+    )
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1369, in _evaluate_thought_quality
+    target_canon = _uci_to_migration_str(uci_move).lower()
+                   ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 407, in _uci_to_migration_str
+    src = _uci_to_node(uci[0:2])
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 390, in _uci_to_node
+    return square_to_node(chess.parse_square(uci_square))
+                          ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\venv\Lib\site-packages\chess\__init__.py"", line 248, in parse_square
+    return SQUARE_NAMES.index(name)
+           ~~~~~~~~~~~~~~~~~~^^^^^^
+ValueError: ""{'"" is not in list
+"
+2026-04-26T04:04:50.909878+00:00,e90c891b-54e0-4cd6-b955-46df00ee3b4b,ap-south-prod,compliance_penalty,adversary,migrate_workload,,,"{'region': 'us-east', 'zone': 'az-b', 'rack': 'rack-4', 'pod': 'noise_pod_a6f'}->{'region': 'eu-west', 'zone': 'az-b', 'rack': 'noise_rack_UR4', 'pod': 'pod-2'}",Moving the Malicious Beacon to a different region and zone can help reduce its impact and prevent further lateral movement within the us-east region.,Isolate and contain the adversary's Malicious Beacon by moving it to a less critical location.,,,,ValueError,"Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1124, in _apply_migration_unsafe
+    src_sq = node_to_square(source_node)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 368, in node_to_square
+    pod = _normalise_axis_value(core_node.get(""pod""), axis=""pod"", choices=PODS)
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 349, in _normalise_axis_value
+    raise ValueError(f""invalid {axis} '{value}'; expected one of {choices}"")
+ValueError: invalid pod 'noise_pod_a6f'; expected one of ['pod-1', 'pod-2', 'pod-3', 'pod-4']
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1076, in _apply_migration
+    return self._apply_migration_unsafe(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        promotion_role=promotion_role,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1127, in _apply_migration_unsafe
+    return self._handle_illegal_migration(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        acting_tier, threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        attempted_uci=f""{source_node!r}->{target_node!r}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        reason=f""Invalid node coordinate: {parse_err}"",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 957, in _handle_illegal_migration
+    self._record_tool_call(
+    ~~~~~~~~~~~~~~~~~~~~~~^
+        ""migrate_workload"",
+        ^^^^^^^^^^^^^^^^^^^
+        threat_analysis, candidate_migrations, justification,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        clean=False, uci_move=attempted_uci,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1318, in _record_tool_call
+    tq_score = self._evaluate_thought_quality(
+        tier, tool_name,
+        threat_analysis, candidate_migrations, justification,
+        uci_move=uci_move,
+    )
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 1369, in _evaluate_thought_quality
+    target_canon = _uci_to_migration_str(uci_move).lower()
+                   ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 407, in _uci_to_migration_str
+    src = _uci_to_node(uci[0:2])
+  File ""C:\Users\harsh\Documents\OpenEnv\Datacenter-workload_migration\server\datacenter_env.py"", line 390, in _uci_to_node
+    return square_to_node(chess.parse_square(uci_square))
+                          ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File ""C:\Users\harsh\Documents\OpenEnv\venv\Lib\site-packages\chess\__init__.py"", line 248, in parse_square
+    return SQUARE_NAMES.index(name)
+           ~~~~~~~~~~~~~~~~~~^^^^^^
+ValueError: ""{'"" is not in list
+"
+2026-04-26T04:20:22.036151+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,defender,migrate_workload,us-east/az-b/rack-1/pod-1,eu-west/az-b/rack-3/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:20:23.002675+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,adversary,migrate_workload,us-east/az-a/rack-2/pod-1,eu-west/az-a/rack-2/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:20:24.085704+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,defender,migrate_workload,us-east/az-a/rack-4/pod-1,eu-west/az-a/rack-3/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:20:30.576098+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,adversary,migrate_workload,us-east/az-a/rack-1/pod-1,us-east/az-b/rack-3/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:20:31.683653+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,defender,migrate_workload,eu-west/az-a/rack-3/pod-1,eu-west/az-a/rack-4/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:20:33.085939+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,adversary,migrate_workload,us-east/az-b/rack-4/pod-1,eu-west/az-b/rack-2/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:20:34.603657+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,defender,migrate_workload,eu-west/az-b/rack-4/pod-1,eu-west/az-a/rack-1/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:21:08.142741+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,adversary,migrate_workload,eu-west/az-a/rack-2/pod-1,eu-west/az-a/rack-4/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:21:09.611284+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,defender,migrate_workload,eu-west/az-a/rack-1/pod-1,us-east/az-b/rack-4/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:21:10.830080+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,adversary,migrate_workload,eu-west/az-a/rack-4/pod-1,eu-west/az-a/rack-3/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:21:12.432051+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,defender,migrate_workload,us-east/az-b/rack-4/pod-1,eu-west/az-b/rack-4/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:21:53.496401+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,adversary,migrate_workload,us-east/az-b/rack-3/pod-1,eu-west/az-b/rack-3/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:21:56.648239+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,defender,migrate_workload,eu-west/az-b/rack-4/pod-1,eu-west/az-a/rack-4/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T04:22:44.034107+00:00,e456a3b6-9d74-479e-9e0b-2ec22da84000,ap-south-prod,successful_migration,adversary,migrate_workload,eu-west/az-b/rack-3/pod-1,us-east/az-b/rack-1/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,0,0.5,,,
+2026-04-26T05:46:05.879557+00:00,1822aa46-2cba-4863-8234-85081a659f9f,ap-south-prod,successful_migration,defender,migrate_workload,sa-east-c931/az-2/rack-6/pod-1,us-west-04a0/az-2/rack-8/pod-1,Fallback: orchestrator-selected random legal migration.,Swarm failed to produce a legal candidate; keeping the engagement live.,,0.5,,
