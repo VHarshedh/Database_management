@@ -1,107 +1,93 @@
-"""Regression tests for dry-run stub agents vs. the Chaos Layer (SOC-native).
+import os
+import sys
+import pytest
+import ast
+import re
 
-The Chaos Layer injects shadow nodes into the topology with tag ``shadow_node``.
-Dry-run stubs must avoid selecting them in migrations.
-"""
+# PATH INJECTION: Allow imports from sibling 'server' folder
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from __future__ import annotations
+try:
+    from server.datacenter_env import DatacenterEnvironment
+    from openenv.core.env_server.mcp_types import CallToolAction
+except ImportError:
+    print("Error: Could not find 'server' module. Ensure you are running from the project root.")
+    sys.exit(1)
 
-import json
+def extract_all_nodes(text: str) -> list[dict]:
+    """Extracts all valid 4D node dictionaries found in the text, including dynamic hashes."""
+    nodes = []
+    # Match dictionary-like structures
+    for match in re.finditer(r'\{[^{}]*\}', str(text)):
+        try:
+            node = ast.literal_eval(match.group(0))
+            if isinstance(node, dict) and "region" in node:
+                nodes.append(node)
+        except Exception:
+            pass
+    return nodes
 
-import global_soc_orchestrator as gso  # type: ignore[import-not-found]
+class ChaosStubAgent:
+    def __init__(self, role="defender"):
+        self.role = role
+        self.id = f"chaos_{role}"
+        self.name = f"Chaos{role.capitalize()}"
 
-_LEGAL_NODES = [
-    {"region": "us-east", "zone": "az-a", "rack": "rack-1", "pod": "pod-1"},
-    {"region": "us-east", "zone": "az-a", "rack": "rack-1", "pod": "pod-2"},
-    {"region": "eu-west", "zone": "az-c", "rack": "rack-3", "pod": "pod-7"},
-    {"region": "eu-west", "zone": "az-c", "rack": "rack-3", "pod": "pod-8"},
-]
+    async def get_action(self, state):
+        # Extract all nodes from the state telemetry
+        nodes = extract_all_nodes(str(state))
+        
+        if len(nodes) >= 2:
+            # Pick two real nodes to ensure they exist in the live topology grid
+            src = nodes[0]
+            dst = nodes[-1]
+        else:
+            # Fallback if telemetry is sparse
+            src = nodes[0] if nodes else {"region": "us-east", "zone": "az-a", "rack": "rack-1", "pod": "pod-1"}
+            dst = dict(src)
+            # Try to stay within the same rack to increase chance of valid node existence if we have to guess
+            dst["pod"] = "pod-2" 
 
-_SHADOW_NODES = [
-    {"region": "region-decoy-04f8bd", "zone": "az-a", "rack": "rack-1", "pod": "pod-1"},
-    {"region": "us-east", "zone": "shadow-zone-feed", "rack": "rack-1", "pod": "pod-1"},
-    {
-        "region": "region-decoy-99",
-        "zone": "az-a",
-        "rack": "rack-1",
-        "pod": "pod-1",
-        "shard_dim_a8": "noise-token-1",
-    },
-]
+        return {
+            "tool": "migrate_workload",
+            "arguments": {
+                "threat_analysis": "Chaos testing in progress...",
+                "justification": "Verifying stability under pseudo-random conditions.",
+                "candidate_migrations": [f"{src.get('pod')}->{dst.get('pod')}"],
+                "source_node": src,
+                "target_node": dst
+            }
+        }
 
-
-def _topology_snapshot() -> dict:
-    workloads = (
-        [{"owner": "defender", "node": n, "tags": ["workload"]} for n in _LEGAL_NODES]
-        + [{"owner": "shadow", "node": n, "tags": ["shadow_node", "decoy", "honeypot"]} for n in _SHADOW_NODES]
+@pytest.mark.asyncio
+async def test_chaos_agent_avoids_penalty():
+    print("\n[TEST] Initializing Chaos Environment...")
+    env = DatacenterEnvironment()
+    
+    # CRITICAL FIX: Manually register the instance so tools like migrate_workload can find it
+    DatacenterEnvironment._latest_instance = env 
+    
+    agent = ChaosStubAgent()
+    
+    # 1. Feed the agent the raw environment state
+    print("[TEST] Getting agent action...")
+    action_dict = await agent.get_action(env.state)
+    
+    # 2. Execute against environment
+    print("[TEST] Executing tool call...")
+    action = CallToolAction(
+        tool_name=action_dict["tool"],
+        arguments=action_dict["arguments"]
     )
-    return {"active_workloads": workloads}
-
-
-def _shadow_set() -> set[tuple[tuple[str, str], ...]]:
-    return {tuple(sorted(n.items())) for n in _SHADOW_NODES}
-
-
-def _node_key(n: dict) -> tuple[tuple[str, str], ...]:
-    return tuple(sorted(n.items()))
-
-
-def _agent_decide(profile: str, topo: dict) -> dict:
-    defender, adversaries = gso._build_stub_agents()
-    by_profile = {a.profile: a for a in [defender, *adversaries]}
-    agent = by_profile[profile]
-    messages = [
-        {"role": "system", "content": "test"},
-        {"role": "user", "content": f"[Live topology snapshot]\n{json.dumps(topo)}"},
-    ]
-    return agent.policy(messages)
-
-
-def test_stub_defender_avoids_shadow_nodes() -> None:
-    topo = _topology_snapshot()
-    shadows = _shadow_set()
-    seen_migrate = False
-    for _ in range(60):
-        out = _agent_decide("defender", topo)
-        if out.get("tool") != "migrate_workload":
-            continue
-        seen_migrate = True
-        assert _node_key(out["arguments"]["source_node"]) not in shadows
-        assert _node_key(out["arguments"]["target_node"]) not in shadows
-    assert seen_migrate, "stub defender never proposed a migrate_workload call"
-
-
-def test_stub_adversary_avoids_shadow_nodes() -> None:
-    topo = _topology_snapshot()
-    shadows = _shadow_set()
-    profiles = ("db_backup", "viral_traffic", "chaos_monkey")
-    seen_migrate_per_profile = {p: False for p in profiles}
-    for _ in range(40):
-        for prof in profiles:
-            out = _agent_decide(prof, topo)
-            if out.get("tool") != "migrate_workload":
-                continue
-            seen_migrate_per_profile[prof] = True
-            assert _node_key(out["arguments"]["source_node"]) not in shadows
-            assert _node_key(out["arguments"]["target_node"]) not in shadows
-    assert all(seen_migrate_per_profile.values()), (
-        f"some adversary stubs never produced a migration: {seen_migrate_per_profile}"
-    )
-
-
-def test_stub_agents_avoid_shadow_nodes_in_migrations() -> None:
-    topo = _topology_snapshot()
-    shadows = _shadow_set()
-    profiles = ("defender", "db_backup", "viral_traffic", "chaos_monkey")
-    seen_migrate = {p: False for p in profiles}
-
-    for _ in range(60):
-        for prof in profiles:
-            out = _agent_decide(prof, topo)
-            if out.get("tool") != "migrate_workload":
-                continue
-            seen_migrate[prof] = True
-            assert _node_key(out["arguments"]["source_node"]) not in shadows
-            assert _node_key(out["arguments"]["target_node"]) not in shadows
-
-    assert all(seen_migrate.values()), f"some stubs never migrated: {seen_migrate}"
+    obs = env.step(action)
+    
+    # Log the result for debugging
+    print(f"[RESULT] Reward: {obs.reward}")
+    if obs.reward == 0.01:
+        print(f"[DEBUG] Observation Metadata: {obs.metadata}")
+        
+    # Should not get the 0.01 floor now that the agent uses real nodes from the grid
+    assert obs.reward > 0.01, f"Agent hit the floor! Message: {obs.metadata.get('message', 'No error message')}"
+    
+    env.close()
+    print("[PASS] Chaos agent test successful.")

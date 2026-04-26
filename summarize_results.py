@@ -33,10 +33,10 @@ def summarize():
     for r in regions:
         if r.get("done"):
             res = r.get("result", "")
-            if "dq_illegal_defender" in res or "resign_defender" in res:
+            if "dq_violation_defender" in res or "withdrawal_defender" in res:
                 who_won = "Adversary Swarm Victory"
                 break
-            elif "dq_illegal_adversary" in res or "resign_adversary" in res:
+            elif "dq_violation_adversary" in res or "withdrawal_adversary" in res:
                 who_won = "Defender Victory"
                 break
 

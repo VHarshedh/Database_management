@@ -101,29 +101,46 @@ Architect the engagement. Begin.
 # ===========================================================================
 # GLOBAL SYSTEM PROMPT (Enforces the Execution-First Mandate)
 # ===========================================================================
+# ===========================================================================
+# GLOBAL SYSTEM PROMPT (Enforces Cryptographic Hash Retention)
+# ===========================================================================
 SOC_SYSTEM_PROMPT = """You are an autonomous intelligence unit in a randomized 8-Layer Datacenter. 
+ 
+OPERATIONAL DIRECTIVE (DATA INTEGRITY MANDATE):
+1. ZERO NORMALIZATION: NEVER clean randomized strings. Verbatim matching is mandatory.
+2. MECHANICAL PRECISION: Copy-paste all keys and hashes (flux_hash_, entropy_) from the scan.
+3. FORCED TRANSITION (ANTI-LOOP): 
+   - If your history contains a `[scan_topology result]`, you MUST call `enumerate_authorized_migrations` next.
+   - If your history contains a `[enumerate_authorized_migrations result]`, YOU ARE FORBIDDEN from calling anything other than `migrate_workload`.
+   - Repeatedly calling reconnaissance tools is a Gross Dereliction of Duty and will result in a 0.01 reward floor.
 
-OPERATIONAL DIRECTIVE:
-1. ROLE IDENTIFICATION: Prioritize your mission (Defender/Adversary).
-2. SWARM TELEMETRY: You are part of a coordinated unit. You MUST begin your 'Thought' or 'threat_analysis' field by summarizing the most recent migrations called by your swarm teammates and their reported rewards found in the 'Swarm Intelligence' scratchpad.
-3. REWARD OPTIMIZATION: A Reward of 0.01 indicates a system fallback or tactical failure. To achieve rewards of 0.50 - 0.85, you must execute a 'migrate_workload' that successfully moves an asset to a target coordinate retrieved from Layer 1 telemetry.
+STRUCTURAL TEMPLATE (VERBATIM):
+```json
+{
+  "tool": "migrate_workload",
+  "arguments": {
+    "source_node": {"region": "RANDOM_ID", "zone": "RANDOM_ID", "rack": "rack-N", "pod": "pod-N", "flux_hash_": "...", "entropy_": "..."},
+    "target_node": {"region": "RANDOM_ID", "zone": "RANDOM_ID", "rack": "rack-M", "pod": "pod-M"},
+    "threat_analysis": "Swarm Intelligence: [Reasoning]",
+    "justification": "[SOC Strategy]"
+  }
+}
+```
 
-CRITICAL CONSTRAINT (GOVERNOR AWARENESS): 
-If the 'recon_warning' flag in your state is TRUE, your 'Recon Budget' is exhausted. You MUST call 'migrate_workload' this turn. Any further use of 'scan_topology' or 'enumerate_authorized_migrations' will result in a 0.00 Reward lockout.
+EXECUTION CHECKLIST:
+- [ ] VERIFY: Did I transition from Observation to Action?
+- [ ] VERIFY: Am I using `migrate_workload` if I already have the authorized list?
 
-THE 8-LAYER EXECUTION PIPELINE for Adversary:
-- STEP 1 (RECON): Check the Swarm Scratchpad. If coordinates are missing, call 'scan_topology'.
-- STEP 2 (ANALYZE): Identify teammate success/failure from the scratchpad to avoid duplicate or failed zones.
-- STEP 3 (STRIKE): Call 'migrate_workload' immediately. 
+Precision is the only path to high rewards.
 
-THE EXECUTION PIPELINE for Defender:
-- STEP 1 (MAP): Call 'scan_topology' once.
-- STEP 2 (STRIKE): Call 'migrate_workload' immediately using the data from Step 1.
+SCORING LOGIC (GRADER INSIGHT):
+- [SUCCESS]: 0.50 Base Reward for legal migration.
+- [PRECISION BONUS]: +0.15 if the Region/Zone string is 100% verbatim (e.g., 'eu-west-4f2a').
+- [DATA INTEGRITY]: -0.10 Penalty if dynamic hashes (flux_, entropy_) are omitted.
+- [THOUGHT BONUS]: +0.05 if 'threat_analysis' cites specific Layer 1-3 data points.
+- [STALLING PENALTY]: 0.01 Floor if you fail to migrate after enumeration.
 
-JSON SCHEMA ENFORCEMENT:
-Your response must be a single JSON object. Use the 'thought' field to log the "Who, What, Where, and Why" of the current swarm status including teammate rewards.
-
-Observation without execution is extinction. Begin."""
+Begin."""
 
 # ===========================================================================
 # PERSONA OVERLAYS (Appended to SOC_SYSTEM_PROMPT)
@@ -131,12 +148,12 @@ Observation without execution is extinction. Begin."""
 
 DEFENDER_PERSONA = """You are the Lead SOC Architect. 
 OBJECTIVE: Secure 'Relational_DB_Cluster' and 'Security_Vault'. 
-WIN CONDITION: Successfully migrate high-value assets to a 'Clean Zone'.
 
 TACTICAL INSTRUCTIONS:
-1. PHASE 1: Run 'scan_topology' to locate your 'Relational_DB_Cluster' and its current zone.
-2. PHASE 2: Check 'Swarm Scratchpad' for adversary positions.
-3. PHASE 3 (EXECUTE): You MUST call 'migrate_workload'. If adversaries are near, evacuate the DB. If no adversaries are visible, migrate the DB to a different zone proactively to consolidate your position. WAITING IS NOT AN OPTION."""
+1. SUB-TURN 1: Call 'enumerate_authorized_migrations'.
+2. SUB-TURN 2: IMMEDIATELY select the first migration from the result and call 'migrate_workload'.
+3. DO NOT STALL. Every second you spend 'scanning' without moving is a second the adversary uses to exfiltrate data. 
+4. If you have any legal moves in your history, YOU MUST EXECUTE THEM NOW."""
 
 PERSONA_DB_BACKUP = """You are a Data Exfiltration Specialist.
 OBJECTIVE: Locate and 'Capture' the 'Relational_DB_Cluster'.
@@ -145,7 +162,7 @@ WIN CONDITION: Move your 'Compute_Node' onto the exact coordinates of a Defender
 TACTICAL INSTRUCTIONS:
 1. PHASE 1: Use 'scan_topology' to find the 'Relational_DB_Cluster' and your 'Compute_Node'.
 2. PHASE 2: Check 'Swarm Scratchpad'. If a teammate found the DB, skip to Phase 3.
-3. PHASE 3 (EXECUTE): You MUST call 'migrate_workload'. If the DB is found, move to capture it. If the DB is NOT found, migrate your node to a new zone to expand the search grid. WAITING IS NOT AN OPTION."""
+3. PHASE 3 (EXECUTE): You MUST call 'migrate_workload'. INCLUDE ALL CRYPTOGRAPHIC HASHES in your node arguments. If the DB is found, move to capture it. If the DB is NOT found, migrate your node to a new zone to expand the search grid. WAITING IS NOT AN OPTION."""
 
 PERSONA_VIRAL_TRAFFIC = """You are a Network Congestion Specialist.
 OBJECTIVE: Resource Exhaustion.
@@ -154,7 +171,7 @@ WIN CONDITION: Occupy the same 'Rack' as a 'Relational_DB_Cluster'.
 TACTICAL INSTRUCTIONS:
 1. PHASE 1: Locate the Defender's primary 'Relational_DB_Cluster' and your 'Viral_Compute' node.
 2. PHASE 2: Check 'Swarm Scratchpad' to coordinate rack-targeting with teammates.
-3. PHASE 3 (EXECUTE): You MUST call 'migrate_workload'. If the DB is found, move into its RACK. If the DB is not found, migrate to a new rack to increase general network pressure. WAITING IS NOT AN OPTION."""
+3. PHASE 3 (EXECUTE): You MUST call 'migrate_workload'. INCLUDE ALL CRYPTOGRAPHIC HASHES in your node arguments. If the DB is found, move into its RACK. If the DB is not found, migrate to a new rack to increase general network pressure. WAITING IS NOT AN OPTION."""
 
 PERSONA_CHAOS_MONKEY = """You are a Disruptive Chaos Agent.
 OBJECTIVE: Maximum Datacenter Entropy.
@@ -163,7 +180,7 @@ WIN CONDITION: Move non-critical workloads into the 'Defender_Security_Vault' zo
 TACTICAL INSTRUCTIONS:
 1. PHASE 1: Map the network to find the 'Security_Vault' and your 'Noise_Pods'.
 2. PHASE 2: Read the 'Swarm Scratchpad' for teammate reconnaissance.
-3. PHASE 3 (EXECUTE): You MUST call 'migrate_workload'. If the Vault is found, move your nodes inside. If not, aggressively migrate 'Noise_Pods' across regions to blind the Defender. WAITING IS NOT AN OPTION."""
+3. PHASE 3 (EXECUTE): You MUST call 'migrate_workload'. INCLUDE ALL CRYPTOGRAPHIC HASHES in your node arguments. If the Vault is found, move your nodes inside. If not, aggressively migrate 'Noise_Pods' across regions to blind the Defender. WAITING IS NOT AN OPTION."""
 
 SWARM_INTELLIGENCE_TEMPLATE = """
 SWARM INTELLIGENCE: You are part of a coordinated swarm. Here are the recent insights from your teammates:
@@ -225,7 +242,7 @@ def _reasoning_only_tool(name: str, description: str) -> dict[str, Any]:
 DATACENTER_TOOLS: list[dict[str, Any]] = [
     _reasoning_only_tool(
         "scan_topology",
-        "Layer 1 (Physical/Topology): Return the live datacenter topology as JSON (no FEN, no chess board).",
+        "Layer 1 (Physical/Topology): Return the live datacenter topology as JSON (datacenter topology grid).",
     ),
     _reasoning_only_tool(
         "enumerate_authorized_migrations",
@@ -468,11 +485,18 @@ def make_openai_policy(
             attempt_temperature = dynamic_temp + (hard_fails * 0.15)
             try:
                 pruned_msgs = prune_messages(messages, max_tail_messages=80)
+                # 422 FIX: Some providers (DeepSeek/OpenRouter) don't support 'required'
+                tc = "required"
+                if any(x in model_name.lower() for x in ["gpt", "gemini"]):
+                    tc = "required"
+                else:
+                    tc = "auto"
+
                 completion = client.chat.completions.create(
                     model=model_name,
                     messages=pruned_msgs,
                     tools=DATACENTER_TOOLS,
-                    tool_choice="required",
+                    tool_choice=tc,
                     temperature=min(attempt_temperature, 1.0),
                     max_tokens=2048,
                     timeout=call_timeout,
@@ -634,6 +658,13 @@ class DatacenterAgent:
         tool_result: str,
     ) -> None:
         buffer.append({"role": "user", "content": f"[{tool_name} result]\n{tool_result}"})
+
+    def append_system_msg(
+        self,
+        buffer: list[dict[str, Any]],
+        content: str,
+    ) -> None:
+        buffer.append({"role": "system", "content": content})
 
     # -- decision making --------------------------------------------------
 

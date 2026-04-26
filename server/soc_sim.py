@@ -54,11 +54,17 @@ class SOCState(State):
     shadow_canonicals: set[str] = Field(default_factory=set)
 
     scans_used_this_turn: int = 0
+    moves_per_turn: int = 3
+    current_turn_moves: int = 0
 
     def flip_turn(self) -> None:
-        self.active_tier = "adversary" if self.active_tier == "defender" else "defender"
-        self.incident_clock += 1
-        self.scans_used_this_turn = 0
+        """Called after a successful migration."""
+        self.current_turn_moves += 1
+        if self.current_turn_moves >= self.moves_per_turn:
+            self.active_tier = "adversary" if self.active_tier == "defender" else "defender"
+            self.incident_clock += 1
+            self.scans_used_this_turn = 0
+            self.current_turn_moves = 0
 
 
 def build_initial_state(*, region_label: str = "unset", baseline_threat: float = 0.30) -> SOCState:

@@ -6,14 +6,14 @@ FROM ${BASE_IMAGE} AS builder
 
 WORKDIR /app
 
-# Ensure git and stockfish are available
+# Ensure git is available
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git stockfish && \
+    apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 
 # Build argument to control whether we're building standalone or in-repo
 ARG BUILD_MODE=in-repo
-ARG ENV_NAME=chess_arena
+ARG ENV_NAME=datacenter_soc
 
 # Copy environment code
 COPY . /app/env
@@ -55,9 +55,9 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /app/env
 
-# Install stockfish in the final image as well
+# Install dependencies in the final image
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends stockfish curl && \
+    apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy the entire environment directory (including .venv) from builder

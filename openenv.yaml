@@ -1,6 +1,6 @@
 spec_version: 1
-name: chess_arena
+name: datacenter_soc
 type: mcp
 runtime: fastapi
-app: chess_arena.server.app:app
+app: server.app:app
 port: 8000

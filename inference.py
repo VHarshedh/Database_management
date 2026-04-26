@@ -213,8 +213,11 @@ def physics_oracle_triage(
     candidates: list[_Candidate] = []
     for d in decisions:
         cand = _Candidate(profile=d.profile, decision=d)
-        # Sensor-aware filter: allow mapping tools.
-        if d.tool not in ("migrate_workload", "scan_topology", "enumerate_authorized_migrations"):
+        # Sensor-aware filter: allow mapping and escalation tools.
+        if d.tool not in (
+            "migrate_workload", "scan_topology", "enumerate_authorized_migrations",
+            "declare_breach", "escalate_to_oncall", "escalate_to_sysadmin"
+        ):
             cand.error = f"unsupported swarm tool ({d.tool!r})"
             candidates.append(cand)
             continue
@@ -300,7 +303,7 @@ class GlobalSOCOrchestrator:
         self.defender_scratchpad: list[str] = []
         self.adversary_scratchpad: list[str] = []
         self.agent_recon_count: dict[DatacenterAgent, int] = {}
-        self.cycle_metrics = {"defender_actions": 0, "adversary_actions": 0}
+        self.cycle_metrics: dict[str, dict[str, int]] = {}
         # Layer 5 control: set to False for unattended runs (CI, dry-runs).
         # If unset, default to True only when stdin looks interactive so the
         # loop never blocks on input() in non-interactive contexts.
@@ -310,10 +313,9 @@ class GlobalSOCOrchestrator:
 
     # ----- environment helpers -----------------------------------------
 
-    def reset_cycle_metrics(self) -> None:
+    def reset_cycle_metrics(self, region_id: str) -> None:
         """Resets counters at the start of every region's cycle."""
-        self.cycle_metrics["defender_actions"] = 0
-        self.cycle_metrics["adversary_actions"] = 0
+        self.cycle_metrics[region_id] = {"defender_actions": 0, "adversary_actions": 0}
 
     def reset_all(self) -> None:
         for r in self.regions:
@@ -361,6 +363,30 @@ class GlobalSOCOrchestrator:
         args.setdefault("candidate_migrations", [])
         args.setdefault("justification", "")
 
+        # 1. Turn 1 Hardening: If agent tries to migrate without any recon, force a scan.
+        # This prevents the 0.01 floor on step 1 due to randomized coordinates.
+        is_first_move = agent not in self.agent_recon_count
+        if is_first_move and tool == "migrate_workload":
+            # RELAXED GOVERNOR: If they are using Swarm Intelligence (shared info), allow it.
+            threat_analysis = args.get("threat_analysis", "")
+            has_swarm_info = "Swarm Intelligence" in threat_analysis
+            
+            if not has_swarm_info:
+                _log(f"   [GOVERNOR] {agent.profile}:{agent.model_name} attempted blind migration. Forcing Turn 1 Scan.")
+                decision = AgentDecision(
+                tool="scan_topology",
+                arguments={
+                    "threat_analysis": "Governor Override: Blind migration prevented.",
+                    "justification": "Force mapping of grid to prevent initial hallucination failure.",
+                    "candidate_migrations": []
+                },
+                raw="[GOVERNOR_FORCE_SCAN]",
+                profile=agent.profile,
+                region_id=region.region_id,
+            )
+            tool = decision.tool
+            args = decision.arguments
+
         # 2. Anti-Stall Governor
         if tool in ["scan_topology", "enumerate_authorized_migrations"]:
             self.agent_recon_count[agent] = self.agent_recon_count.get(agent, 0) + 1
@@ -371,16 +397,33 @@ class GlobalSOCOrchestrator:
             _log(f"   [GOVERNOR] {agent.profile}:{agent.model_name} is stalling. Forcing Fallback Migration.")
             self.agent_recon_count[agent] = 0 # Reset counter after penalty
             
-            # Hijack the decision to force a migration. 
-            # This ensures env.step() runs and triggers the orchestrator's random fallback.
+            # --- GOVERNOR HIJACK: TIER-AWARE COORDINATES ---
+            # Ensure the Governor only tries to move assets owned by the agent's tier.
+            agent_tier = agent.profile.lower() # "defender" or "adversary"
+            tier_workloads = [w for w in region.env._state.workloads.values() if w.owner == agent_tier]
+            
+            if len(tier_workloads) >= 1:
+                # Move a tier-owned asset to a random other node in the grid
+                src_node = dict(tier_workloads[0].node)
+                all_nodes = list(region.env._state.workloads.values())
+                tgt_node = dict(all_nodes[-1].node)
+                
+                # Ensure src != tgt
+                if src_node == tgt_node and len(all_nodes) > 1:
+                    tgt_node = dict(all_nodes[0].node)
+            else:
+                # Absolute fallback if tier owns nothing (highly unlikely)
+                src_node = {"region": "us-east-prod", "zone": "az-1", "rack": "rack-1", "pod": "pod-1"}
+                tgt_node = {"region": "us-east-prod", "zone": "az-1", "rack": "rack-1", "pod": "pod-2"}
+
             decision = AgentDecision(
                 tool="migrate_workload",
                 arguments={
                     "threat_analysis": "Governor Override: Tactical Stalling Detected.",
-                    "justification": "Agent exceeded recon limits. Forcing random migration.",
-                    "candidate_migrations": ["forced->fallback"],
-                    "source_node": {"region": "us-east", "zone": "az-a", "rack": "forced", "pod": "fallback"},
-                    "target_node": {"region": "us-east", "zone": "az-a", "rack": "forced", "pod": "fallback"},
+                    "justification": "Agent exceeded recon limits. Forcing a physically valid transition to advance state.",
+                    "candidate_migrations": ["governor->fallback"],
+                    "source_node": src_node,
+                    "target_node": tgt_node,
                 },
                 raw="[GOVERNOR_HIJACK]",
                 profile=agent.profile,
@@ -438,6 +481,12 @@ class GlobalSOCOrchestrator:
 
         # Reward is on the observation; choose which side we're attributing to.
         reward = float(getattr(obs, "reward", 0.0) or 0.0)
+
+        # Apply Governor Penalty if the move was hijacked
+        if decision.raw and "[GOVERNOR" in decision.raw:
+            reward = max(0.01, reward - 0.10)
+            _log(f"   [GOVERNOR] Applied -0.10 penalty for hijacked action. Final reward: {reward:.2f}")
+
         return reward, tool_text, bool(getattr(obs, "done", False))
 
     def _history_for(
@@ -593,7 +642,7 @@ class GlobalSOCOrchestrator:
     # ----- defender turn ------------------------------------------------
 
     async def defender_swarm_step(self, region: RegionRunner) -> CycleRecord:
-        """Take exactly one DEFENDER half-move in this region (with swarm triage)."""
+        """Run the defender swarm with Action Bursting (3 actions per LLM)."""
         record = CycleRecord(region_id=region.region_id, cycle_index=region.cycle_index)
 
         if region.env.done:
@@ -604,164 +653,213 @@ class GlobalSOCOrchestrator:
         if not region.env.is_defender_active():
             return record
 
-        # 1. Shared Intelligence: refresh system prompts for all defenders.
-        for d in self.defenders:
-            d.refresh_system_prompt(self.defender_scratchpad)
-            buf = self._history_for(region, d)
-            if buf and buf[0]["role"] == "system":
-                buf[0]["content"] = d.system_prompt
+        # Dynamically set move budget: 3 actions per active LLM.
+        if not self.defenders:
+            _log(f"⚠️ [EXTINCTION] No Defender species remaining. Cycle abandoned.")
+            record.done = True
+            return record
+            
+        region.env._state.moves_per_turn = 3 * len(self.defenders)
+        region.env._state.current_turn_moves = 0
         
-        topo_snapshot = region.env.get_topology_state()
-        
-        # 2. Parallel Inference: spawn the swarm.
-        tasks = []
-        for d in self.defenders:
-            buf = self._history_for(region, d)
-            tasks.append(d.choose_async(topo_snapshot, buf, region_id=region.region_id))
-
-        decisions: list[AgentDecision] = []
-        gathered = await asyncio.gather(*tasks, return_exceptions=True)
-        to_eliminate = []
-        for d, res in zip(self.defenders, gathered):
-            if isinstance(res, BaseException):
-                _log(f"   [{region.region_id}] defender {d.model_name} raised: {res!r}")
-                if "RateLimitExhausted" in str(res):
-                    _log(f"🚨 [ELIMINATION] {d.model_name} purged due to Layer 3 Overload.")
-                    to_eliminate.append(d)
-                decisions.append(AgentDecision(
-                    tool=None, arguments={}, raw=f"(exception: {res!r})",
-                    profile="defender", region_id=region.region_id,
-                ))
-            else:
-                decisions.append(res)
-        
-        # Process eliminations
-        for d in to_eliminate:
-            if d in self.defenders:
-                self.defenders.remove(d)
-        if to_eliminate and not self.defenders:
-            _log(f"⚠️ [EXTINCTION] All Defender species eliminated in {region.region_id}.")
-
-        # 3. Triage: find all legal candidates.
-        legal_candidates, all_candidates = physics_oracle_triage(region.env, decisions)
-        
-        # Record all candidates for detailed failure analysis in reports.
-        record.defender_all_candidates = [
-            {
-                "profile": c.profile,
-                "tool": c.decision.tool,
-                "damage_score": c.damage_score,
-                "error": c.error,
-                "arguments": c.decision.arguments,
-            }
-            for c in all_candidates
-        ]
-        
-        if not legal_candidates:
-             # Fallback
-             fallback = self._random_legal_migration(region.env)
-             if fallback is None:
-                 record.done = True
-                 return record
-             # Wrap fallback in a Candidate for unified execution loop.
-             legal_candidates = [_Candidate(profile=fallback.profile, decision=fallback)]
-             record.fallback_used = True
-
-        # 4. Sequential Execution of the full defender payload.
-        moved_assets = set()
-        actions_executed = 0
+        total_actions_executed = 0
         total_reward = 0.0
         
-        for cand in legal_candidates:
-            decision = cand.decision
+        for sub_turn in range(3):
+            if not region.env.is_defender_active() or region.env.done:
+                break
             
-            # Conflict check: skip if asset/source node already moved this cycle.
-            src_node = decision.arguments.get("source_node")
-            if src_node and isinstance(src_node, dict):
-                canon = node_canonical(src_node)
-                if canon in moved_assets:
-                    _log(f"   🚫 Defender Conflict: {decision.model_name} attempted redundant move from {canon}")
+            _log(f"   [SUB-TURN {sub_turn+1}/3] Defender Swarm starting inference...")
+            
+            # Sub-turn awareness: inject a virtual system message about the burst status
+            for d in self.defenders:
+                buf = self._history_for(region, d)
+                d.append_system_msg(buf, f"[TACTIC_ALERT] You are in Action Burst Sub-turn {sub_turn+1} of 3. Precision is mandatory.")
+
+            # 1. Shared Intelligence: refresh system prompts for all defenders.
+            for d in self.defenders:
+                d.refresh_system_prompt(self.defender_scratchpad)
+                buf = self._history_for(region, d)
+                if buf and buf[0]["role"] == "system":
+                    buf[0]["content"] = d.system_prompt
+            
+            topo_snapshot = region.env.get_topology_state()
+            
+            # 2. Parallel Inference: spawn the swarm.
+            tasks = []
+            for d in self.defenders:
+                buf = self._history_for(region, d)
+                tasks.append(d.choose_async(topo_snapshot, buf, region_id=region.region_id))
+
+            decisions: list[AgentDecision] = []
+            gathered = await asyncio.gather(*tasks, return_exceptions=True)
+            to_eliminate = []
+            for d, res in zip(self.defenders, gathered):
+                if isinstance(res, BaseException):
+                    _log(f"   [{region.region_id}] defender {d.model_name} raised: {res!r}")
+                    if "RateLimitExhausted" in str(res):
+                        _log(f"🚨 [ELIMINATION] {d.model_name} purged due to Layer 3 Overload.")
+                        to_eliminate.append(d)
+                    decisions.append(AgentDecision(
+                        tool=None, arguments={}, raw=f"(exception: {res!r})",
+                        profile="defender", region_id=region.region_id,
+                    ))
+                else:
+                    decisions.append(res)
+            
+            # Process eliminations
+            for d in to_eliminate:
+                if d in self.defenders:
+                    self.defenders.remove(d)
+            if to_eliminate and not self.defenders:
+                _log(f"⚠️ [EXTINCTION] All Defender species eliminated in {region.region_id}.")
+
+            # 3. Triage: find all legal candidates.
+            legal_candidates, all_candidates = physics_oracle_triage(region.env, decisions)
+            
+            # Record all candidates for detailed failure analysis in reports.
+            record.defender_all_candidates.extend([
+                {
+                    "profile": c.profile,
+                    "tool": c.decision.tool,
+                    "damage_score": c.damage_score,
+                    "error": c.error,
+                    "arguments": c.decision.arguments,
+                }
+                for c in all_candidates
+            ])
+            
+            if not legal_candidates:
+                _log(f"   [SUB-TURN {sub_turn+1}/3] No legal actions produced by the swarm.")
+                # Fallback on the final sub-turn if no legal moves found yet
+                if sub_turn == 2 and total_actions_executed == 0:
+                    # Inject a "Tactical Advisory" hint before the final attempt.
+                    hint_asset = self._find_critical_asset(region.env)
+                    if hint_asset and self.defenders:
+                         self.defenders[0].append_system_msg(
+                            self._history_for(region, self.defenders[0]),
+                            f"TACTICAL ADVISORY: Intelligence unit has established a SENSOR LOCK. "
+                            f"Your '{hint_asset['asset_id']}' is at {node_canonical(hint_asset['node'])}. "
+                            f"Authorized target found at a safe zone. EXECUTE LAYER 7 MIGRATION IMMEDIATELY."
+                         )
+
+                    fallback = self._random_legal_migration(region.env)
+                    if fallback is None:
+                        record.done = True
+                        return record
+                    legal_candidates = [_Candidate(profile=fallback.profile, decision=fallback)]
+                    record.fallback_used = True
+                else:
                     continue
-                moved_assets.add(canon)
 
-            winning_agent = next(
-                (a for a in self.defenders if a.model_name == decision.model_name),
-                self.defenders[0]
-            )
-            _log(f"   🔧 Tool: {decision.tool}({json.dumps(decision.arguments)})")
-            reward, tool_text, done = self._apply_decision(region, winning_agent, decision)
-            _log(f"   💰 Reward: {reward:.2f}")
-
-            # Update metrics
-            self.cycle_metrics["defender_actions"] += 1
-            _log(f"   ✅ Defender Action {self.cycle_metrics['defender_actions']}: {decision.tool} executed (Reward: {reward:.2f})")
+            # 4. Sequential Execution of the full defender payload.
+            moved_assets = set()
             
-            # 4. Scratchpad Update: summary of successful defender action.
-            justification = decision.arguments.get("justification", "no justification")
-            entry = f"[{winning_agent.model_name}]: {decision.tool} applied because {justification}"
-            self.defender_scratchpad.append(entry)
-            if len(self.defender_scratchpad) > 10:
-                self.defender_scratchpad.pop(0)
+            for cand in legal_candidates:
+                decision = cand.decision
+                
+                # Conflict check: skip if asset/source node already moved this cycle.
+                src_node = decision.arguments.get("source_node")
+                if src_node and isinstance(src_node, dict):
+                    canon = node_canonical(src_node)
+                    if canon in moved_assets:
+                        _log(f"   🚫 Defender Conflict: {decision.model_name} attempted redundant move from {canon}")
+                        continue
+                    moved_assets.add(canon)
 
-            actions_executed += 1
-            total_reward += reward
+                winning_agent = next(
+                    (a for a in self.defenders if a.model_name == decision.model_name),
+                    self.defenders[0] if self.defenders else None
+                )
+                if not winning_agent:
+                    _log(f"   🚫 Action Aborted: No active agent to host {decision.tool}")
+                    continue
+
+                _log(f"   🔧 Tool: {decision.tool}({json.dumps(decision.arguments)})")
+                reward, tool_text, done = self._apply_decision(region, winning_agent, decision)
+                _log(f"   💰 Reward: {reward:.2f}")
+
+                # Update metrics
+                metrics = self.cycle_metrics.setdefault(region.region_id, {"defender_actions": 0, "adversary_actions": 0})
+                metrics["defender_actions"] += 1
+                _log(f"   [{region.region_id}] ✅ Defender Action {metrics['defender_actions']}: {decision.tool} executed (Reward: {reward:.2f})")
+                
+                # 4. Scratchpad Update: summary of successful defender action.
+                justification = decision.arguments.get("justification", "no justification")
+                entry = f"[{winning_agent.model_name}]: {decision.tool} applied because {justification}"
+                self.defender_scratchpad.append(entry)
+                if len(self.defender_scratchpad) > 10:
+                    self.defender_scratchpad.pop(0)
+
+                total_actions_executed += 1
+                total_reward += reward
+                
+                # Record this specific swarm action for auditing and reporting.
+                record.defender_swarm.append({
+                    "profile": winning_agent.profile,
+                    "tool": decision.tool,
+                    "reward": reward,
+                    "damage_score": cand.damage_score,
+                    "arguments": decision.arguments,
+                })
+                
+                # [STEP] log for parser
+                region.step_count += 1
+                region.reward_history.append(reward)
+                args_json = json.dumps(decision.arguments, separators=(',', ':')) if decision.arguments else "{}"
+                
+                err_str = "null"
+                if not decision.tool:
+                    err_str = "malformed_tool"
+                elif isinstance(tool_text, str) and ("invalid" in tool_text.lower() or "violation" in tool_text.lower()):
+                    err_str = "layer6_trap"
+                region.error_state = err_str if err_str != "null" else None
+
+                print(
+                    f"[STEP] step={region.step_count} "
+                    f"action={decision.tool}({args_json}) "
+                    f"reward={reward:.2f} done={str(done).lower()} error={err_str}",
+                    flush=True
+                )
+
+                # HITL check
+                is_hitl = (
+                    decision.tool == "escalate_to_sysadmin"
+                    or (isinstance(tool_text, str) and tool_text.startswith(HITL_SIGNAL_PREFIX))
+                )
+                if is_hitl and not done and self.hitl_enabled:
+                    human_decision = self._hitl_human_override(region, decision)
+                    if human_decision is not None:
+                        h_reward, h_tool_text, h_done = self._apply_decision(
+                            region, self.defenders[0], human_decision
+                        )
+                        # We only record the human reward if it overrides the last action.
+                        total_reward += h_reward
+                        done = h_done
+
+                if done:
+                    record.done = True
+                    record.result = region.env.result
+                    break
             
-            # Record this specific swarm action for auditing and reporting.
-            record.defender_swarm.append({
-                "profile": winning_agent.profile,
-                "tool": decision.tool,
-                "reward": reward,
-                "damage_score": cand.damage_score,
-                "arguments": decision.arguments,
-            })
-            
-            # [STEP] log for parser
-            region.step_count += 1
-            region.reward_history.append(reward)
-            args_json = json.dumps(decision.arguments, separators=(',', ':')) if decision.arguments else "{}"
-            
-            err_str = "null"
-            if not decision.tool:
-                err_str = "malformed_tool"
-            elif isinstance(tool_text, str) and ("invalid" in tool_text.lower() or "violation" in tool_text.lower()):
-                err_str = "layer6_trap"
-            region.error_state = err_str if err_str != "null" else None
-
-            print(
-                f"[STEP] step={region.step_count} "
-                f"action={decision.tool}({args_json}) "
-                f"reward={reward:.2f} done={str(done).lower()} error={err_str}",
-                flush=True
-            )
-
-            # HITL check
-            is_hitl = (
-                decision.tool == "escalate_to_sysadmin"
-                or (isinstance(tool_text, str) and tool_text.startswith(HITL_SIGNAL_PREFIX))
-            )
-            if is_hitl and not done and self.hitl_enabled:
-                human_decision = self._hitl_human_override(region, decision)
-                if human_decision is not None:
-                    h_reward, h_tool_text, h_done = self._apply_decision(
-                        region, self.defenders[0], human_decision
-                    )
-                    # We only record the human reward if it overrides the last action.
-                    total_reward += h_reward
-                    done = h_done
-
-            if done:
-                record.done = True
-                record.result = region.env.result
+            if record.done:
                 break
 
+        # Ensure turn-flip if the swarm didn't migrate (to avoid locking out the opponent)
+        if not record.done and region.env.is_defender_active():
+            _log(f"   [SYNC] Forcing turn-flip to Adversary after Defender swarm completion.")
+            region.env._state.active_tier = "adversary"
+            region.env._state.current_turn_moves = 0
+            region.env._state.scans_used_this_turn = 0
+
         record.defender_reward = total_reward
-        _log(f"   ✅ Defender Turn: {actions_executed} actions executed.")
+        _log(f"   ✅ Defender Turn Complete: {total_actions_executed} actions executed across {sub_turn+1} sub-turns.")
         return record
 
     # ----- adversary swarm turn ----------------------------------------
 
     async def adversary_swarm_step(self, region: RegionRunner) -> CycleRecord:
-        """Run the 3-way adversary swarm with concurrent execution and shared scratchpad."""
+        """Run the adversary swarm with Action Bursting (3 actions per LLM)."""
         record = CycleRecord(region_id=region.region_id, cycle_index=region.cycle_index)
 
         if region.env.done:
@@ -769,151 +867,200 @@ class GlobalSOCOrchestrator:
             record.result = region.env.result
             return record
 
-        if not region.env.is_adversary_active():
+        # Dynamically set move budget: 3 actions per active LLM.
+        if not self.adversaries:
+            _log(f"⚠️ [EXTINCTION] No Adversary species remaining. Cycle abandoned.")
+            record.done = True
             return record
 
-        # 1. Shared Intelligence: refresh system prompts with the current adversary scratchpad.
-        for adv in self.adversaries:
-            adv.refresh_system_prompt(self.adversary_scratchpad)
-            buf = self._history_for(region, adv)
-            if buf and buf[0]["role"] == "system":
-                buf[0]["content"] = adv.system_prompt
-
-        topo_snapshot = region.env.get_topology_state()
-
-        # 2. Parallel Inference: spawn the swarm.
-        tasks = []
-        for adv in self.adversaries:
-            buf = self._history_for(region, adv)
-            tasks.append(adv.choose_async(topo_snapshot, buf, region_id=region.region_id))
-
-        decisions: list[AgentDecision] = []
-        gathered = await asyncio.gather(*tasks, return_exceptions=True)
-        to_eliminate = []
-        for adv, res in zip(self.adversaries, gathered):
-            if isinstance(res, BaseException):
-                _log(f"   [{region.region_id}] adversary {adv.profile} raised: {res!r}")
-                if "RateLimitExhausted" in str(res):
-                    _log(f"🚨 [ELIMINATION] {adv.model_name} purged due to Layer 3 Overload.")
-                    to_eliminate.append(adv)
-                decisions.append(AgentDecision(
-                    tool=None, arguments={}, raw=f"(exception: {res!r})",
-                    profile=adv.profile, region_id=region.region_id,
-                ))
-            else:
-                decisions.append(res)
+        region.env._state.moves_per_turn = 3 * len(self.adversaries)
+        region.env._state.current_turn_moves = 0
         
-        # Process eliminations
-        for adv in to_eliminate:
-            if adv in self.adversaries:
-                self.adversaries.remove(adv)
-        if to_eliminate and not self.adversaries:
-            _log(f"⚠️ [EXTINCTION] All Adversary species eliminated in {region.region_id}.")
-
-        # 3. Triage: find all legal candidates.
-        legal_candidates, all_candidates = physics_oracle_triage(region.env, decisions)
-        
-        # Record all candidates for detailed failure analysis in reports.
-        record.adversary_all_candidates = [
-            {
-                "profile": c.profile,
-                "tool": c.decision.tool,
-                "damage_score": c.damage_score,
-                "error": c.error,
-                "arguments": c.decision.arguments,
-            }
-            for c in all_candidates
-        ]
-        
-        if not legal_candidates:
-            # Fallback
-            fallback = self._random_legal_migration(region.env)
-            if fallback is None:
-                record.done = True
-                return record
-            # Wrap fallback in a Candidate for unified execution loop.
-            legal_candidates = [_Candidate(profile=fallback.profile, decision=fallback)]
-            record.fallback_used = True
-
-        # 4. Sequential Execution of the full swarm payload.
-        moved_assets = set()
-        actions_executed = 0
+        total_actions_executed = 0
         total_reward = 0.0
         total_damage = 0.0
         
-        for cand in legal_candidates:
-            decision = cand.decision
-            
-            # Conflict check: skip if asset/source node already moved this cycle.
-            src_node = decision.arguments.get("source_node")
-            if src_node and isinstance(src_node, dict):
-                canon = node_canonical(src_node)
-                if canon in moved_assets:
-                    _log(f"   🚫 Illegal Conflict: {decision.profile} attempted redundant move from {canon}")
-                    continue
-                moved_assets.add(canon)
-
-            agent = next((a for a in self.adversaries if a.profile == decision.profile), self.adversaries[0])
-            
-            _log(f"   🔧 Tool: {decision.tool}({json.dumps(decision.arguments)})")
-            reward, tool_text, done = self._apply_decision(region, agent, decision)
-            _log(f"   💰 Reward: {reward:.2f}")
-
-            # Update metrics
-            self.cycle_metrics["adversary_actions"] += 1
-            _log(f"   ✅ Swarm Action {self.cycle_metrics['adversary_actions']}: {decision.tool} executed (Reward: {reward:.2f})")
-
-            # 5. Scratchpad Update: summary of successful actions.
-            asset_id = decision.arguments.get("asset_id", "workload")
-            target = decision.arguments.get("target_node")
-            target_str = node_canonical(target) if target and isinstance(target, dict) else "unknown"
-            justification = decision.arguments.get("justification", "no justification")
-            
-            entry = f"[{decision.profile}]: Moved {asset_id} to {target_str} because {justification}"
-            self.adversary_scratchpad.append(entry)
-            if len(self.adversary_scratchpad) > 10:
-                self.adversary_scratchpad.pop(0)
-
-            actions_executed += 1
-            total_reward += reward
-            total_damage += (cand.damage_score if cand.damage_score != float("-inf") else 0.0)
-            
-            # Record this specific swarm action for auditing and reporting.
-            record.adversary_swarm.append({
-                "profile": decision.profile,
-                "tool": decision.tool,
-                "reward": reward,
-                "damage_score": cand.damage_score,
-                "arguments": decision.arguments,
-            })
-            
-            # [STEP] log for parser (maintain backward compatibility with evaluators)
-            region.step_count += 1
-            region.reward_history.append(reward)
-            args_json = json.dumps(decision.arguments, separators=(',', ':')) if decision.arguments else "{}"
-            
-            err_str = "null"
-            if not decision.tool:
-                err_str = "malformed_tool"
-            elif isinstance(tool_text, str) and ("invalid" in tool_text.lower() or "violation" in tool_text.lower()):
-                err_str = "layer6_trap"
-            region.error_state = err_str if err_str != "null" else None
-
-            print(
-                f"[STEP] step={region.step_count} "
-                f"action={decision.tool}({args_json}) "
-                f"reward={reward:.2f} done={str(done).lower()} error={err_str}",
-                flush=True
-            )
-            
-            if done:
-                record.done = True
-                record.result = region.env.result
+        for sub_turn in range(3):
+            # Check turn alignment: if we already flipped to defender, stop.
+            if region.env.is_defender_active() or region.env.done:
                 break
+            
+            _log(f"   [SUB-TURN {sub_turn+1}/3] Adversary Swarm starting inference...")
+
+            # Sub-turn awareness: inject a virtual system message about the burst status
+            for adv in self.adversaries:
+                buf = self._history_for(region, adv)
+                adv.append_system_msg(buf, f"[TACTIC_ALERT] You are in Action Burst Sub-turn {sub_turn+1} of 3. Strike with precision.")
+
+            # 1. Shared Intelligence: refresh system prompts with the current adversary scratchpad.
+            for adv in self.adversaries:
+                adv.refresh_system_prompt(self.adversary_scratchpad)
+                buf = self._history_for(region, adv)
+                if buf and buf[0]["role"] == "system":
+                    buf[0]["content"] = adv.system_prompt
+
+            topo_snapshot = region.env.get_topology_state()
+
+            # 2. Parallel Inference: spawn the swarm.
+            tasks = []
+            for adv in self.adversaries:
+                buf = self._history_for(region, adv)
+                tasks.append(adv.choose_async(topo_snapshot, buf, region_id=region.region_id))
+
+            decisions: list[AgentDecision] = []
+            gathered = await asyncio.gather(*tasks, return_exceptions=True)
+            to_eliminate = []
+            for adv, res in zip(self.adversaries, gathered):
+                if isinstance(res, BaseException):
+                    _log(f"   [{region.region_id}] adversary {adv.profile} raised: {res!r}")
+                    if "RateLimitExhausted" in str(res):
+                        _log(f"🚨 [ELIMINATION] {adv.model_name} purged due to Layer 3 Overload.")
+                        to_eliminate.append(adv)
+                    decisions.append(AgentDecision(
+                        tool=None, arguments={}, raw=f"(exception: {res!r})",
+                        profile=adv.profile, region_id=region.region_id,
+                    ))
+                else:
+                    decisions.append(res)
+            
+            # Process eliminations
+            for adv in to_eliminate:
+                if adv in self.adversaries:
+                    self.adversaries.remove(adv)
+            if to_eliminate and not self.adversaries:
+                _log(f"⚠️ [EXTINCTION] All Adversary species eliminated in {region.region_id}.")
+
+            # 3. Triage: find all legal candidates.
+            legal_candidates, all_candidates = physics_oracle_triage(region.env, decisions)
+            
+            # Record all candidates for detailed failure analysis in reports.
+            record.adversary_all_candidates.extend([
+                {
+                    "profile": c.profile,
+                    "tool": c.decision.tool,
+                    "damage_score": c.damage_score,
+                    "error": c.error,
+                    "arguments": c.decision.arguments,
+                }
+                for c in all_candidates
+            ])
+            
+            if not legal_candidates:
+                _log(f"   [SUB-TURN {sub_turn+1}/3] No legal actions produced by the swarm.")
+                # Fallback on the final sub-turn if no legal moves found yet
+                if sub_turn == 2 and total_actions_executed == 0:
+                    # Inject a "Tactical Advisory" hint before the final attempt.
+                    hint_asset = self._find_critical_asset(region.env, owner="defender")
+                    if hint_asset and self.adversaries:
+                         self.adversaries[0].append_system_msg(
+                            self._history_for(region, self.adversaries[0]),
+                            f"TACTICAL ADVISORY: Adversary reconnaissance has established a SENSOR LOCK. "
+                            f"The Defender '{hint_asset['asset_id']}' is at {node_canonical(hint_asset['node'])}. "
+                            f"EXECUTE CAPTURE MIGRATION IMMEDIATELY."
+                         )
+
+                    fallback = self._random_legal_migration(region.env)
+                    if fallback is None:
+                        record.done = True
+                        return record
+                    legal_candidates = [_Candidate(profile=fallback.profile, decision=fallback)]
+                    record.fallback_used = True
+                else:
+                    continue
+
+            # 4. Sequential Execution of the full swarm payload.
+            moved_assets = set()
+            
+            for cand in legal_candidates:
+                decision = cand.decision
+                
+                # Conflict check: skip if asset/source node already moved this cycle.
+                src_node = decision.arguments.get("source_node")
+                if src_node and isinstance(src_node, dict):
+                    canon = node_canonical(src_node)
+                    if canon in moved_assets:
+                        _log(f"   🚫 Illegal Conflict: {decision.profile} attempted redundant move from {canon}")
+                        continue
+                    moved_assets.add(canon)
+
+                agent = next(
+                    (a for a in self.adversaries if a.profile == decision.profile),
+                    self.adversaries[0] if self.adversaries else None
+                )
+                if not agent:
+                    _log(f"   🚫 Action Aborted: No active agent to host {decision.tool}")
+                    continue
+
+                _log(f"   🔧 Tool: {decision.tool}({json.dumps(decision.arguments)})")
+                reward, tool_text, done = self._apply_decision(region, agent, decision)
+                _log(f"   💰 Reward: {reward:.2f}")
+
+                # Update metrics
+                metrics = self.cycle_metrics.setdefault(region.region_id, {"defender_actions": 0, "adversary_actions": 0})
+                metrics["adversary_actions"] += 1
+                _log(f"   [{region.region_id}] ✅ Swarm Action {metrics['adversary_actions']}: {decision.tool} executed (Reward: {reward:.2f})")
+
+                # 5. Scratchpad Update: summary of successful actions.
+                asset_id = decision.arguments.get("asset_id", "workload")
+                target = decision.arguments.get("target_node")
+                target_str = node_canonical(target) if target and isinstance(target, dict) else "unknown"
+                justification = decision.arguments.get("justification", "no justification")
+                
+                entry = f"[{decision.profile}]: Moved {asset_id} to {target_str} because {justification}"
+                self.adversary_scratchpad.append(entry)
+                if len(self.adversary_scratchpad) > 10:
+                    self.adversary_scratchpad.pop(0)
+
+                total_actions_executed += 1
+                total_reward += reward
+                total_damage += (cand.damage_score if cand.damage_score != float("-inf") else 0.0)
+                
+                # Record this specific swarm action for auditing and reporting.
+                record.adversary_swarm.append({
+                    "profile": decision.profile,
+                    "tool": decision.tool,
+                    "reward": reward,
+                    "damage_score": cand.damage_score,
+                    "arguments": decision.arguments,
+                })
+                
+                # [STEP] log for parser
+                region.step_count += 1
+                region.reward_history.append(reward)
+                args_json = json.dumps(decision.arguments, separators=(',', ':')) if decision.arguments else "{}"
+                
+                err_str = "null"
+                if not decision.tool:
+                    err_str = "malformed_tool"
+                elif isinstance(tool_text, str) and ("invalid" in tool_text.lower() or "violation" in tool_text.lower()):
+                    err_str = "layer6_trap"
+                region.error_state = err_str if err_str != "null" else None
+
+                print(
+                    f"[STEP] step={region.step_count} "
+                    f"action={decision.tool}({args_json}) "
+                    f"reward={reward:.2f} done={str(done).lower()} error={err_str}",
+                    flush=True
+                )
+                
+                if done:
+                    record.done = True
+                    record.result = region.env.result
+                    break
+            
+            if record.done:
+                break
+
+        # Ensure turn-flip if the swarm didn't migrate (to avoid locking out the opponent)
+        if not record.done and not region.env.is_defender_active():
+            _log(f"   [SYNC] Forcing turn-flip to Defender after Adversary swarm completion.")
+            region.env._state.active_tier = "defender"
+            region.env._state.current_turn_moves = 0
+            region.env._state.scans_used_this_turn = 0
 
         record.adversary_reward = total_reward
         record.adversary_damage_score = total_damage
-        _log(f"   ✅ Swarm Turn: {actions_executed} actions executed.")
+        _log(f"   ✅ Swarm Turn Complete: {total_actions_executed} actions executed across {sub_turn+1} sub-turns.")
         return record
 
     def _random_legal_migration(self, env: DatacenterEnvironment) -> Optional[AgentDecision]:
@@ -963,7 +1110,7 @@ class GlobalSOCOrchestrator:
                 if region.env.done:
                     continue
                 all_done = False
-                self.reset_cycle_metrics()
+                self.reset_cycle_metrics(region.region_id)
                 
                 # [START] log
                 if region.step_count == 0:
@@ -988,9 +1135,10 @@ class GlobalSOCOrchestrator:
                 self.audit_trail.append(a_rec)
                 
                 # Cycle Summary
-                total_actions = sum(self.cycle_metrics.values())
-                _log(f"\n   [CYCLE SUMMARY] Total Actions: {total_actions}")
-                _log(f"   [THREAT LEVEL] Current Adversary Pressure: {region.env.get_adversary_pressure():.2f}")
+                metrics = self.cycle_metrics.get(region.region_id, {"defender_actions": 0, "adversary_actions": 0})
+                total_actions = sum(metrics.values())
+                _log(f"\n   [{region.region_id}] [CYCLE SUMMARY] Total Actions: {total_actions}")
+                _log(f"   [{region.region_id}] [THREAT LEVEL] Current Adversary Pressure: {region.env.get_adversary_pressure():.2f}")
                 
                 if region.env.done:
                     region.last_result = region.env.result
@@ -1150,7 +1298,7 @@ def _resolve_models(config: dict, silent: bool = False) -> tuple[list[tuple[str,
             ("deepseek-ai/DeepSeek-V3", "hf"),
             ("meta-llama/Llama-3.3-70B-Instruct", "hf"),
             ("Qwen/Qwen2.5-72B-Instruct", "hf"),
-            ("google/gemma-3-27b-it", "hf")
+            ("deepseek-ai/DeepSeek-R1", "hf")
         ]
         _log("Using default Hugging Face model pool (no .env models found).")
 
@@ -1198,12 +1346,12 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--defender", type=str, default=None,
-        help="Override defender model. Example: 'deepseek-ai/DeepSeek-V3'"
+        "--defender", type=str, nargs="+", default=None,
+        help="Override defender model(s). Example: 'deepseek-ai/DeepSeek-V3'"
     )
     parser.add_argument(
-        "--adversary", type=str, action="append", default=None,
-        help="Override adversary model(s). Can be specified multiple times."
+        "--adversary", "--attacker", dest="adversary", type=str, nargs="+", default=None,
+        help="Override adversary/attacker model(s). Example: '--attacker model1 model2'"
     )
     args = parser.parse_args()
 
@@ -1230,7 +1378,7 @@ def main() -> None:
                         return "hf"
                     return "hf"
 
-                def_models = [(args.defender, _guess_provider(args.defender))] if args.defender else []
+                def_models = [(m, _guess_provider(m)) for m in args.defender] if args.defender else []
                 adv_models = [(m, _guess_provider(m)) for m in args.adversary] if args.adversary else []
                 
                 # Only fill in if the user hasn't provided a specific role at all

@@ -1,25 +1,21 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""
-Action and Observation models for the Chess Arena Environment.
-Since this is an MCP environment, we rely on the standard MCP types.
-"""
+"""Action and Observation models for the Datacenter SOC Environment."""
 
-from openenv.core.env_server.mcp_types import (
-    CallToolAction,
-    CallToolObservation,
-    ListToolsAction,
-    ListToolsObservation,
-)
-from openenv.core.env_server.types import Action, Observation, State
+from pydantic import BaseModel, ConfigDict
+from typing import Any, Optional
 
-__all__ = [
-    "CallToolAction",
-    "CallToolObservation",
-    "ListToolsAction",
-    "ListToolsObservation",
-    "Action",
-    "Observation",
-    "State",
-]
+
+class DatacenterAction(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    tool: str
+    arguments: dict[str, Any]
+
+
+class DatacenterObservation(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    observation: str
+    reward: float
+    done: bool
+    info: dict[str, Any]

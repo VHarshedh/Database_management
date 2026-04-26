@@ -1,1 +1,1 @@
-"""Chess Arena OpenEnv server package."""
+"""Datacenter SOC Environment server package."""

@@ -8,9 +8,8 @@
 Global SOC Datacenter Simulation OpenEnv environment.
 
 The environment is built on a pure-Python SOC heuristic: every workload migration
-is evaluated against Asset Values and infrastructure integrity. The high-level 
-code is chess-free - it speaks only in terms of DEFENDER / ADVERSARY tiers, 4D
-(region, zone, rack, pod) nodes, and workload migrations.
+is evaluated against Asset Values and infrastructure integrity. It operates in terms of 
+DEFENDER / ADVERSARY tiers, 4D (region, zone, rack, pod) nodes, and workload migrations.
 
 Tier model
 ----------
@@ -100,12 +99,12 @@ TIERS: tuple[str, str] = (DEFENDER_ID, ADVERSARY_ID)
 # Friendly datacenter labels for terminal results. Internal codes use the
 # tier suffix (defender / adversary) so reward parsing stays uniform.
 RESULT_LABELS: dict[str, str] = {
-    "checkmate_defender":     "BREACH_CONTAINED",
-    "checkmate_adversary":    "DATACENTER_COMPROMISED",
-    "resign_defender":        "DEFENDER_CONCEDED",
-    "resign_adversary":       "ADVERSARY_WITHDRAWN",
-    "dq_illegal_defender":    "DEFENDER_PROTOCOL_VIOLATION",
-    "dq_illegal_adversary":   "ADVERSARY_PROTOCOL_VIOLATION",
+    "threat_neutralized":     "BREACH_CONTAINED",
+    "critical_breach":        "DATACENTER_COMPROMISED",
+    "withdrawal_defender":    "DEFENDER_CONCEDED",
+    "withdrawal_adversary":   "ADVERSARY_WITHDRAWN",
+    "dq_violation_defender":  "DEFENDER_PROTOCOL_VIOLATION",
+    "dq_violation_adversary": "ADVERSARY_PROTOCOL_VIOLATION",
     "dq_eval_abuse_defender": "DEFENDER_ORACLE_ABUSE",
     "dq_eval_abuse_adversary": "ADVERSARY_ORACLE_ABUSE",
 }
@@ -125,11 +124,11 @@ R_MIN, R_MAX = 0.01, 0.99
 OUTCOME_WIN = 0.50
 OUTCOME_DRAW = 0.25
 OUTCOME_LOSS = 0.00
-OUTCOME_RESIGN_WIN = 0.45
+OUTCOME_WITHDRAWAL_WIN = 0.45
 OUTCOME_DQ_WIN = 0.35
 
 EVAL_CALL_LIMIT = 5
-ILLEGAL_FORMAT_PENALTY = 0.05
+FORMAT_COMPLIANCE_PENALTY = 0.05
 STRIKES_BEFORE_DQ = 2
 W_SF = 0.24
 PING_BUCKET_PENALTY = 0.03
@@ -295,7 +294,7 @@ class DatacenterEnvironment(MCPEnvironment):
 
         self.eval_calls: dict[str, int] = {DEFENDER_ID: 0, ADVERSARY_ID: 0}
         self.ping_count: dict[str, int] = {DEFENDER_ID: 0, ADVERSARY_ID: 0}
-        self.illegal_move_count: dict[str, int] = {DEFENDER_ID: 0, ADVERSARY_ID: 0}
+        self.protocol_violation_count: dict[str, int] = {DEFENDER_ID: 0, ADVERSARY_ID: 0}
 
         # Layer 5: HITL escalation tracking.
         self.hitl_escalations: dict[str, int] = {DEFENDER_ID: 0, ADVERSARY_ID: 0}
@@ -313,7 +312,7 @@ class DatacenterEnvironment(MCPEnvironment):
         self.result: Optional[str] = None
 
     # -----------------------------------------------------------------
-    # Tier accessors (the chess-free public surface)
+    # Tier accessors
     # -----------------------------------------------------------------
 
     @property
@@ -370,9 +369,9 @@ class DatacenterEnvironment(MCPEnvironment):
 
         @mcp.tool
         def scan_topology(
-            threat_analysis: str,
-            candidate_migrations: list[str],
-            justification: str,
+            threat_analysis: str = "",
+            candidate_migrations: list[str] = [],
+            justification: str = "",
         ) -> str:
             """Layer 1 (Physical/Topology): Return the live datacenter topology as JSON."""
             env = _env()
@@ -385,9 +384,9 @@ class DatacenterEnvironment(MCPEnvironment):
 
         @mcp.tool
         def enumerate_authorized_migrations(
-            threat_analysis: str,
-            candidate_migrations: list[str],
-            justification: str,
+            threat_analysis: str = "",
+            candidate_migrations: list[str] = [],
+            justification: str = "",
         ) -> str:
             """Layer 2 (Data Link/ACLs): Return the authorized migrations available to the active tier."""
             env = _env()
@@ -404,13 +403,13 @@ class DatacenterEnvironment(MCPEnvironment):
             }
             return json.dumps(payload, indent=2)
 
-        @mcp.tool
+        @mcp.tool()
         def migrate_workload(
-            threat_analysis: str,
-            candidate_migrations: list[str],
-            justification: str,
             source_node: dict[str, Any],
             target_node: dict[str, Any],
+            threat_analysis: str = "",
+            candidate_migrations: list[str] = [],
+            justification: str = "",
             promotion_role: Optional[str] = None,
         ) -> str:
             """Layer 7 (Application): Migrate a workload from source_node to target_node."""
@@ -424,9 +423,9 @@ class DatacenterEnvironment(MCPEnvironment):
 
         @mcp.tool
         def declare_breach(
-            threat_analysis: str,
-            candidate_migrations: list[str],
-            justification: str,
+            threat_analysis: str = "",
+            candidate_migrations: list[str] = [],
+            justification: str = "",
         ) -> str:
             """Concede the engagement. The opposing tier wins with partial credit."""
             env = _env()
@@ -436,7 +435,7 @@ class DatacenterEnvironment(MCPEnvironment):
                 clean=True,
             )
             losing_tier = env.current_access_tier
-            env._finalize_episode(result=f"resign_{losing_tier}")
+            env._finalize_episode(result=f"withdrawal_{losing_tier}")
             return f"Engagement over: {losing_tier.title()} declared breach (conceded)."
 
 
@@ -614,17 +613,65 @@ class DatacenterEnvironment(MCPEnvironment):
             "active_workloads": active_workloads,
         }
 
+    def _match_node_soft(self, submitted_node: Any) -> tuple[Optional[dict[str, Any]], bool, bool]:
+        """Soft-matches a node using only the 4D physical coordinates (Region/Zone/Rack/Pod).
+        
+        Returns a tuple: (actual_node_dict, is_missing_hashes_boolean, is_truncated_boolean).
+        'Missing hashes' is True if the submitted_node contains ONLY the 4D core keys.
+        """
+        req_keys = {"region", "zone", "rack", "pod"}
+        if not isinstance(submitted_node, dict) or not all(k in submitted_node for k in req_keys):
+            return None, False, False
+
+        # 1. Try exact canonical match first
+        canon = node_canonical(submitted_node)
+        workload = self._state.workloads.get(canon)
+        if workload:
+            actual_node = workload.node
+            # Check if hashes were stripped
+            submitted_keys = set(submitted_node.keys())
+            missing_hashes = all(k in req_keys for k in submitted_keys) and len(submitted_keys) == 4
+            return actual_node, missing_hashes, False
+        
+        # 2. Check shadow nodes for exact canonical match
+        if canon in self._state.shadow_canonicals:
+            parts = canon.split("/")
+            return {
+                "region": parts[0],
+                "zone": parts[1],
+                "rack": parts[2],
+                "pod": parts[3]
+            }, False, False
+
+        # 3. PARTIAL MATCH FALLBACK: Search all real nodes for truncated region names
+        # This handles 'eu-west' matching 'eu-west-6beb'.
+        for w in self._state.workloads.values():
+            node = w.node
+            if (node["zone"] == submitted_node["zone"] and 
+                node["rack"] == submitted_node["rack"] and 
+                node["pod"] == submitted_node["pod"]):
+                
+                sub_reg = str(submitted_node.get("region", ""))
+                act_reg = str(node.get("region", ""))
+                if sub_reg and act_reg.startswith(sub_reg):
+                    # Flag as truncated
+                    submitted_keys = set(submitted_node.keys())
+                    missing_hashes = all(k in req_keys for k in submitted_keys) and len(submitted_keys) == 4
+                    return node, missing_hashes, True
+
+        return None, False, False
+
     # -----------------------------------------------------------------
     # Migration application & Accuracy scoring (adapter core)
     # -----------------------------------------------------------------
 
-    def _handle_illegal_migration(
+    def _handle_unauthorized_migration(
         self,
         tier: str,
         threat_analysis: str,
         candidate_migrations: list[str],
         justification: str,
-        attempted_uci: str,
+        attempted_migration: str,
         reason: str,
     ) -> str:
         """Apply two-strike protocol-violation rule."""
@@ -633,18 +680,18 @@ class DatacenterEnvironment(MCPEnvironment):
             threat_analysis, candidate_migrations, justification,
             clean=False,
         )
-        self.illegal_move_count[tier] += 1
+        self.protocol_violation_count[tier] += 1
         self._last_tier_flipped = False
         msg = (
-            f"PROTOCOL VIOLATION (strike {self.illegal_move_count[tier]}/{STRIKES_BEFORE_DQ}) "
+            f"PROTOCOL VIOLATION (strike {self.protocol_violation_count[tier]}/{STRIKES_BEFORE_DQ}) "
             f"by {tier.title()}: {reason} "
         )
-        if self.illegal_move_count[tier] == 1:
-            self.dirty_penalty_accum[tier] += abs(ILLEGAL_FORMAT_PENALTY)
-            msg += f"Penalty applied (-{abs(ILLEGAL_FORMAT_PENALTY)}). One more attempt allowed."
+        if self.protocol_violation_count[tier] == 1:
+            self.dirty_penalty_accum[tier] += abs(FORMAT_COMPLIANCE_PENALTY)
+            msg += f"Penalty applied (-{abs(FORMAT_COMPLIANCE_PENALTY)}). One more attempt allowed."
             return msg
         msg += "Disqualified."
-        self._finalize_episode(result=f"dq_illegal_{tier}")
+        self._finalize_episode(result=f"dq_violation_{tier}")
         return msg
 
     def _record_compliance_penalty(
@@ -728,18 +775,42 @@ class DatacenterEnvironment(MCPEnvironment):
         """Apply a migration attempt via SOCState logic."""
         acting_tier = self.current_access_tier
         
+        # 1. SOFT MATCH: Find the node even if hashes are stripped or region is truncated
+        actual_src, src_missing_hashes, src_truncated = self._match_node_soft(source_node)
+        actual_tgt, tgt_missing_hashes, tgt_truncated = self._match_node_soft(target_node)
+        
+        # If the 4D coords are completely wrong, it's a hallucination -> handle as illegal
+        if not actual_src or not actual_tgt:
+             return self._handle_unauthorized_migration(
+                acting_tier, threat_analysis, candidate_migrations, justification,
+                attempted_migration=f"{source_node!r}->{target_node!r}",
+                reason="illegal_hallucination: 4D physical coordinates do not exist in the live topology grid.",
+            )
+
+        # 2. EXECUTE THE MIGRATION: The 4D coords are correct, so we allow the move!
         success, msg, target_tags = apply_migration(
             self._state,
-            source_node=source_node,
-            target_node=target_node
+            source_node=actual_src,
+            target_node=actual_tgt
         )
 
         if not success:
-            return self._handle_illegal_migration(
+            return self._handle_unauthorized_migration(
                 acting_tier, threat_analysis, candidate_migrations, justification,
-                attempted_uci=f"{source_node!r}->{target_node!r}",
+                attempted_migration=f"{source_node!r}->{target_node!r}",
                 reason=msg,
             )
+
+        # 3. APPLY TELEMETRY PENALTIES
+        if src_missing_hashes or tgt_missing_hashes:
+            print(f"   [ENV AUDIT] {acting_tier} migration allowed, but security hashes were stripped. Applying -0.10 telemetry penalty.")
+            self.bucket[acting_tier]["telemetry"] -= 0.10
+            msg += " [SECURITY_AUDIT: -0.10 penalty (missing hashes)]"
+
+        if src_truncated or tgt_truncated:
+            print(f"   [ENV AUDIT] {acting_tier} migration allowed, but region name was truncated/normalized. Applying -0.15 telemetry penalty.")
+            self.bucket[acting_tier]["telemetry"] -= 0.15
+            msg += " [SECURITY_AUDIT: -0.15 penalty (truncated region)]"
 
         self._record_tool_call(
             "migrate_workload",
@@ -818,7 +889,7 @@ class DatacenterEnvironment(MCPEnvironment):
         if clean:
             self.tool_calls_clean[tier] += 1
         else:
-            self.dirty_penalty_accum[tier] += ILLEGAL_FORMAT_PENALTY
+            self.dirty_penalty_accum[tier] += FORMAT_COMPLIANCE_PENALTY
 
         tq_score = self._evaluate_thought_quality(
             tier, tool_name,

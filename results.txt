@@ -1,0 +1,20 @@
+### Automated Datacenter SOC Benchmark Results
+
+The following metrics are aggregated directly from the raw `soc_orchestrator` JSON traces. Metrics reflect the continuous struggle between the Defender (SOC Architect) and the Adversary Swarm across all simulated datacenter regions.
+
+**Total Regions Simulated:** 110
+
+| Metric | Score / Rate |
+| :--- | :---: |
+| **Defender Win Rate** | 71.8% |
+| **Adversary Win Rate** | 21.8% |
+| **Avg Defender Efficiency** | 0.458 |
+| **Avg Adversary Threat Level** | 0.276 |
+
+#### Disqualification (DQ) Breakdown
+| Reason | Count |
+| :--- | :---: |
+| `dq_illegal_defender` | 24 |
+| `dq_illegal_adversary` | 4 |
+
+*Metrics calculated automatically via `summarize_results.py`.*
